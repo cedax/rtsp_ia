@@ -224,14 +224,15 @@ def start_recording(detection_info):
         
         logger.info(f"🎥 Iniciando grabación: {filename}")
 
-def save_recording():
+def save_recording(current_recording_data=None):
     """Guardar video y JSON en un hilo separado - VERSIÓN CORREGIDA"""
-    global current_recording_data
     
-    def save_worker():
+    def save_worker(current_recording_data):
         # SOLUCION: Crear copia local INMEDIATAMENTE con el lock
         data = None
         with recording_lock:
+            logger.info("🔄 Iniciando guardado de grabación...")
+            
             if current_recording_data:
                 logger.info(f"📦 Preparando datos para guardar: {current_recording_data['filename']}")
                 # Hacer copia completa de los datos
@@ -321,9 +322,10 @@ def save_recording():
             import traceback
             logger.error(f"❌ Traceback JSON: {traceback.format_exc()}")
     
-    # Ejecutar en hilo separado
-    save_thread = threading.Thread(target=save_worker, daemon=True)
+    # Ejecutar en hilo separado y mandarle current_recording_data
+    save_thread = threading.Thread(target=save_worker, args=(current_recording_data,), daemon=True)
     save_thread.start()
+
     logger.info("🔄 Hilo de guardado iniciado")
 
 def cleanup_resources():
@@ -336,8 +338,10 @@ def cleanup_resources():
     with recording_lock:
         if recording_active and current_recording_data:
             logger.info("🔄 Finalizando grabación pendiente...")
-            save_recording()
-            time.sleep(3)  # Dar más tiempo para que se guarde
+
+            current_recording_data_copy = current_recording_data.copy()
+            save_recording(current_recording_data_copy)
+            time.sleep(5)  # Dar más tiempo para que se guarde
     
     # Cerrar ventanas
     if SHOW_VIDEO_WINDOW:
@@ -472,7 +476,8 @@ try:
                 # Verificar si debemos parar la grabación
                 if last_detection_time and time.time() - last_detection_time > RECORDING_DURATION:
                     logger.info(f"🛑 Finalizando grabación después de {RECORDING_DURATION}s sin detecciones")
-                    save_recording()
+                    current_recording_data_copy = current_recording_data.copy()
+                    save_recording(current_recording_data_copy)
                     # IMPORTANTE: Solo limpiar después de iniciar el guardado
                     recording_active = False
                     current_recording_data = None
