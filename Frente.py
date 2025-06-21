@@ -40,6 +40,7 @@ RECORDING_DURATION = int(os.getenv('RECORDING_DURATION', 20)) # Segundos SIN det
 PRE_RECORDING_BUFFER = int(os.getenv('PRE_RECORDING_BUFFER', 3)) # Segundos de buffer antes de la detección
 RECORDINGS_BASE_DIR = os.getenv('RECORDINGS_BASE_DIR', 'recordings')
 RECORDING_FPS = int(os.getenv('RECORDING_FPS', 20)) # FPS para la grabación
+SHOW_VIDEO_WINDOW = os.getenv("SHOW_VIDEO_WINDOW", "True").lower() == "true" # Mostrar ventana de video
 
 # ================================
 # CONFIGURACIÓN DE FILTRO DE OBJETOS ESTÁTICOS
@@ -398,16 +399,18 @@ while True:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
            
     # Mostrar frame
-    cv2.imshow("Cámara de Seguridad - YOLO", frame)
+    if SHOW_VIDEO_WINDOW:
+        cv2.imshow("Cámara de Seguridad - YOLO", frame)
 
     # Para video: controlar velocidad de reproducción
     if USE_VIDEO_FILE:
         # Pausar entre frames para simular velocidad real del video
         time.sleep(1.0 / fps_video if fps_video > 0 else 0.033)
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        print("🛑 Salida solicitada por el usuario.")
-        break
+    if SHOW_VIDEO_WINDOW:
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("🛑 Salida solicitada por el usuario.")
+            break
 
 # ================================
 # LIMPIEZA
