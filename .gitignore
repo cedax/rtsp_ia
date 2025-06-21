@@ -1,0 +1,5 @@
+recordings/
+templates
+Web.py
+yolov8n.pt
+.env

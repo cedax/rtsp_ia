@@ -1,0 +1,53 @@
+# ============================================
+# Fuente de video
+# ============================================
+# Establece a True para usar un archivo de video local en lugar de RTSP
+USE_VIDEO_FILE=False
+
+# Ruta al archivo de video (solo se usa si USE_VIDEO_FILE=True) es para debuguear
+VIDEO_FILE_PATH=C:/Users/test/Desktop/recordings/carro.avi
+
+# URL del stream RTSP desde cámara frontal
+RTSP_URL_FRENTE=rtsp://IP:PORT/live/ch00_0
+
+# URL del stream RTSP desde cámara trasera/patio
+RTSP_URL_FRENTE=rtsp://IP:PORT/live/ch00_0
+
+# ============================================
+# Parámetros de grabación
+# ============================================
+# Segundos sin detección para finalizar la grabación
+RECORDING_DURATION=5
+
+# Segundos que se almacenan antes de que comience una detección (buffer)
+PRE_RECORDING_BUFFER=5
+
+# Directorio base donde se guardarán las grabaciones
+RECORDINGS_BASE_DIR=recordings
+
+# Cuadros por segundo para las grabaciones
+RECORDING_FPS=30
+
+# ============================================
+# Detección y seguimiento
+# ============================================
+# Tiempo en segundos para considerar un objeto como estático
+STATIC_OBJECT_TIMEOUT=30.0
+
+# Tolerancia en píxeles para considerar que un objeto no se ha movido
+POSITION_TOLERANCE=50
+
+# Confianza mínima para comenzar a rastrear un objeto
+MIN_CONFIDENCE_FOR_TRACKING=0.4
+
+# ============================================
+# Configuración del modelo YOLO
+# ============================================
+# Suprime mensajes detallados de YOLO
+YOLO_VERBOSE=False
+
+# Evita que se cargue el modelo completo (solo pesos)
+TORCH_WEIGHTS_ONLY=False
+
+# Ruta o nombre del modelo YOLO (por defecto yolov8n.pt)
+YOLO_MODEL_PATH=yolov8n.pt
