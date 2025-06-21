@@ -308,7 +308,7 @@ while True:
         
         # Verificar si debemos parar la grabación (10 segundos después de la ÚLTIMA detección)
         if last_detection_time and time.time() - last_detection_time > RECORDING_DURATION:
-            print("🛑 Finalizando grabación (10s sin detecciones)...")
+            print(f"🛑 Finalizando grabación despues de {RECORDING_DURATION}s sin detecciones")
             save_recording()
             recording_active = False
             current_recording_data = None
