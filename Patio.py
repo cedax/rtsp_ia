@@ -14,6 +14,13 @@ import uuid
 import threading
 from collections import deque
 import math
+import signal
+import sys
+import logging
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -23,34 +30,57 @@ os.environ['TORCH_WEIGHTS_ONLY'] = os.getenv('TORCH_WEIGHTS_ONLY', 'False')
 # Permitir clases necesarias en PyTorch >=2.6
 torch.serialization.add_safe_globals([DetectionModel, Sequential])
 
-# Cargar modelo YOLO
-model = YOLO(os.getenv('YOLO_MODEL_PATH', 'yolov8n.pt'))  # nano = más rápido, 's' = más preciso
+# Variables globales para limpieza
+process = None
+cap = None
+recording_active = False
+current_recording_data = None
+shutdown_requested = False
+
+def signal_handler(sig, frame):
+    """Manejador de señales para limpieza segura"""
+    global shutdown_requested
+    logger.info("🛑 Señal de terminación recibida, cerrando aplicación...")
+    shutdown_requested = True
+
+# Registrar manejador de señales
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+try:
+    # Cargar modelo YOLO
+    model = YOLO(os.getenv('YOLO_MODEL_PATH', 'yolov8n.pt'))
+    logger.info("✅ Modelo YOLO cargado correctamente")
+except Exception as e:
+    logger.error(f"❌ Error cargando modelo YOLO: {e}")
+    sys.exit(1)
 
 # ================================
 # CONFIGURACIÓN DE ENTRADA
 # ================================
-USE_VIDEO_FILE = os.getenv('USE_VIDEO_FILE', 'False') == 'True'  # True para video local, False para stream RTSP
+USE_VIDEO_FILE = os.getenv('USE_VIDEO_FILE', 'False') == 'True'
 VIDEO_FILE_PATH = os.getenv('VIDEO_FILE_PATH')
 RTSP_URL = os.getenv('RTSP_URL_PATIO')
 
 # ================================
 # CONFIGURACIÓN DE GRABACIÓN
 # ================================
-RECORDING_DURATION = int(os.getenv('RECORDING_DURATION', 20)) # Segundos SIN detecciones para parar grabación
-PRE_RECORDING_BUFFER = int(os.getenv('PRE_RECORDING_BUFFER', 3)) # Segundos de buffer antes de la detección
+RECORDING_DURATION = int(os.getenv('RECORDING_DURATION', 20))
+PRE_RECORDING_BUFFER = int(os.getenv('PRE_RECORDING_BUFFER', 3))
 RECORDINGS_BASE_DIR = os.getenv('RECORDINGS_BASE_DIR', 'recordings')
-RECORDING_FPS = int(os.getenv('RECORDING_FPS', 20)) # FPS para la grabación
-SHOW_VIDEO_WINDOW = os.getenv("SHOW_VIDEO_WINDOW", "True").lower() == "true" # Mostrar ventana de video
+RECORDING_FPS = int(os.getenv('RECORDING_FPS', 20))
+SHOW_VIDEO_WINDOW = os.getenv("SHOW_VIDEO_WINDOW", "True").lower() == "true"
 
 # ================================
 # CONFIGURACIÓN DE FILTRO DE OBJETOS ESTÁTICOS
 # ================================
-STATIC_OBJECT_TIMEOUT = float(os.getenv('STATIC_OBJECT_TIMEOUT', 30.0)) # Segundos para considerar un objeto como estático
-POSITION_TOLERANCE = int(os.getenv('POSITION_TOLERANCE', 50)) # Píxeles de tolerancia para considerar misma posición
-MIN_CONFIDENCE_FOR_TRACKING = float(os.getenv('MIN_CONFIDENCE_FOR_TRACKING', 0.4)) # Confianza mínima para iniciar seguimiento
+STATIC_OBJECT_TIMEOUT = float(os.getenv('STATIC_OBJECT_TIMEOUT', 30.0))
+POSITION_TOLERANCE = int(os.getenv('POSITION_TOLERANCE', 50))
+MIN_CONFIDENCE_FOR_TRACKING = float(os.getenv('MIN_CONFIDENCE_FOR_TRACKING', 0.4))
 
-# Diccionario para rastrear objetos detectados
+# Diccionario para rastrear objetos detectados con lock para thread safety
 tracked_objects = {}
+tracked_objects_lock = threading.Lock()
 
 # Dimensiones esperadas
 width, height = 1280, 720
@@ -59,19 +89,19 @@ frame_size = width * height * 3
 # Configurar device (GPU si está disponible)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 model.to(device)
-print(f"🚀 Usando dispositivo: {device}")
+logger.info(f"🚀 Usando dispositivo: {device}")
 
 # Clases importantes para seguridad
 security_classes = ['person', 'car', 'motorcycle', 'bicycle', 'bus', 'truck']
 
 # Colores personalizados por clase
 class_colors = {
-    'person': (0, 255, 0),      # Verde para personas
-    'bicycle': (255, 255, 0),   # Amarillo
-    'car': (0, 0, 255),         # Rojo para vehículos
-    'motorcycle': (255, 0, 255), # Magenta
-    'bus': (0, 255, 255),       # Cian
-    'truck': (128, 0, 128),     # Púrpura
+    'person': (0, 255, 0),
+    'bicycle': (255, 255, 0),
+    'car': (0, 0, 255),
+    'motorcycle': (255, 0, 255),
+    'bus': (0, 255, 255),
+    'truck': (128, 0, 128),
     'bird': (0, 128, 255),
     'cat': (255, 128, 0),
     'dog': (128, 255, 0)
@@ -80,23 +110,28 @@ class_colors = {
 # Variables para optimización y grabación
 frame_count = 0
 start_time = time.time()
-recording_active = False
-current_recording_data = None
 frame_buffer = deque(maxlen=PRE_RECORDING_BUFFER * RECORDING_FPS)
 last_detection_time = None
+
+# Lock para thread safety en grabación - MUY IMPORTANTE
+recording_lock = threading.Lock()
 
 # ================================
 # FUNCIONES DE GRABACIÓN
 # ================================
 def create_recording_path():
     """Crear directorio de grabación basado en fecha actual"""
-    now = datetime.now()
-    year_dir = os.path.join(RECORDINGS_BASE_DIR, str(now.year))
-    month_dir = os.path.join(year_dir, f"{now.month:02d}")
-    day_dir = os.path.join(month_dir, f"{now.day:02d}")
-    
-    os.makedirs(day_dir, exist_ok=True)
-    return day_dir
+    try:
+        now = datetime.now()
+        year_dir = os.path.join(RECORDINGS_BASE_DIR, str(now.year))
+        month_dir = os.path.join(year_dir, f"{now.month:02d}")
+        day_dir = os.path.join(month_dir, f"{now.day:02d}")
+        
+        os.makedirs(day_dir, exist_ok=True)
+        return day_dir
+    except Exception as e:
+        logger.error(f"Error creando directorio de grabación: {e}")
+        return RECORDINGS_BASE_DIR
 
 def generate_video_id():
     """Generar ID único de 8 caracteres"""
@@ -112,325 +147,436 @@ def get_box_center(x1, y1, x2, y2):
 
 def is_object_static(label, center_pos, confidence, current_time):
     """Verificar si un objeto debe considerarse estático"""
-    object_key = f"{label}_{center_pos[0]}_{center_pos[1]}"
-    
-    # Buscar objetos similares en posiciones cercanas
-    for existing_key, obj_data in tracked_objects.items():
-        if existing_key.startswith(label + "_"):
-            existing_pos = (obj_data['center_x'], obj_data['center_y'])
-            distance = calculate_distance(center_pos, existing_pos)
-            
-            if distance <= POSITION_TOLERANCE:
-                # Objeto encontrado en posición similar
-                time_diff = current_time - obj_data['first_seen']
-                obj_data['last_seen'] = current_time
-                obj_data['confidence'] = max(obj_data['confidence'], confidence)
+    with tracked_objects_lock:
+        object_key = f"{label}_{center_pos[0]}_{center_pos[1]}"
+        
+        # Buscar objetos similares en posiciones cercanas
+        for existing_key, obj_data in tracked_objects.items():
+            if existing_key.startswith(label + "_"):
+                existing_pos = (obj_data['center_x'], obj_data['center_y'])
+                distance = calculate_distance(center_pos, existing_pos)
                 
-                if time_diff >= STATIC_OBJECT_TIMEOUT:
-                    return True  # Objeto estático
-                else:
-                    return False  # Objeto aún en período de gracia
-    
-    # Nuevo objeto, agregarlo al seguimiento
-    tracked_objects[object_key] = {
-        'center_x': center_pos[0],
-        'center_y': center_pos[1],
-        'first_seen': current_time,
-        'last_seen': current_time,
-        'confidence': confidence,
-        'class': label
-    }
-    
-    return False  # Nuevo objeto, no es estático
+                if distance <= POSITION_TOLERANCE:
+                    time_diff = current_time - obj_data['first_seen']
+                    obj_data['last_seen'] = current_time
+                    obj_data['confidence'] = max(obj_data['confidence'], confidence)
+                    
+                    return time_diff >= STATIC_OBJECT_TIMEOUT
+        
+        # Nuevo objeto
+        tracked_objects[object_key] = {
+            'center_x': center_pos[0],
+            'center_y': center_pos[1],
+            'first_seen': current_time,
+            'last_seen': current_time,
+            'confidence': confidence,
+            'class': label
+        }
+        
+        return False
 
 def cleanup_old_objects(current_time, timeout=30):
     """Limpiar objetos que no se han visto en un tiempo"""
-    keys_to_remove = []
-    for key, obj_data in tracked_objects.items():
-        if current_time - obj_data['last_seen'] > timeout:
-            keys_to_remove.append(key)
-    
-    for key in keys_to_remove:
-        del tracked_objects[key]
+    with tracked_objects_lock:
+        keys_to_remove = [
+            key for key, obj_data in tracked_objects.items()
+            if current_time - obj_data['last_seen'] > timeout
+        ]
+        
+        for key in keys_to_remove:
+            del tracked_objects[key]
 
 def start_recording(detection_info):
     """Iniciar grabación cuando se detecta algo"""
     global recording_active, current_recording_data, last_detection_time
     
-    # Actualizar tiempo de última detección
-    last_detection_time = time.time()
-    
-    if recording_active:
-        # Si ya estamos grabando, solo añadir la detección
-        current_recording_data['detections'].append(detection_info)
-        return
-    
-    recording_active = True
-    now = datetime.now()
-    video_id = generate_video_id()
-    
-    # Crear información de grabación
-    filename = f"motion_frente_{now.strftime('%Y%m%d')}_{video_id}.mp4"
-    recording_dir = create_recording_path()
-    full_path = os.path.join(recording_dir, filename)
-    relative_path = os.path.relpath(full_path, RECORDINGS_BASE_DIR)
-    
-    current_recording_data = {
-        'video_id': video_id,
-        'filename': filename,
-        'video_path': relative_path.replace('/', '\\'),  # Windows path format
-        'full_path': full_path,
-        'detections': [detection_info],
-        'start_time': time.time(),
-        'frames': list(frame_buffer),  # Copiar frames del buffer
-        'writer': None
-    }
-    
-    print(f"🎥 Iniciando grabación: {filename}")
+    with recording_lock:
+        last_detection_time = time.time()
+        
+        if recording_active:
+            if current_recording_data:
+                current_recording_data['detections'].append(detection_info)
+            return
+        
+        recording_active = True
+        now = datetime.now()
+        video_id = generate_video_id()
+        
+        filename = f"motion_patio_{now.strftime('%Y%m%d')}_{video_id}.mp4"
+        recording_dir = create_recording_path()
+        full_path = os.path.join(recording_dir, filename)
+        relative_path = os.path.relpath(full_path, RECORDINGS_BASE_DIR)
+        
+        # Crear copia del buffer para evitar problemas de concurrencia
+        buffer_copy = list(frame_buffer)
+        
+        current_recording_data = {
+            'video_id': video_id,
+            'filename': filename,
+            'video_path': relative_path.replace('\\', '/'),  # Unix path format
+            'full_path': full_path,
+            'detections': [detection_info],
+            'start_time': time.time(),
+            'frames': buffer_copy,
+            'writer': None,
+            'frames_lock': threading.Lock()
+        }
+        
+        logger.info(f"🎥 Iniciando grabación: {filename}")
 
 def save_recording():
-    """Guardar video y JSON en un hilo separado"""
+    """Guardar video y JSON en un hilo separado - VERSIÓN CORREGIDA"""
     global current_recording_data
     
-    if not current_recording_data:
-        return
-    
     def save_worker():
-        data = current_recording_data.copy()
-        frames = data['frames']
+        # SOLUCION: Crear copia local INMEDIATAMENTE con el lock
+        data = None
+        with recording_lock:
+            if current_recording_data:
+                logger.info(f"📦 Preparando datos para guardar: {current_recording_data['filename']}")
+                # Hacer copia completa de los datos
+                data = {
+                    'video_id': current_recording_data['video_id'],
+                    'filename': current_recording_data['filename'],
+                    'video_path': current_recording_data['video_path'],
+                    'full_path': current_recording_data['full_path'],
+                    'detections': current_recording_data['detections'].copy(),
+                    'start_time': current_recording_data['start_time'],
+                    'frames': current_recording_data['frames'].copy()  # Copia de la lista de frames
+                }
+            else:
+                logger.warning("⚠️ No hay current_recording_data para guardar")
+                return
+        
+        if not data:
+            logger.warning("⚠️ No se pudieron copiar los datos de grabación")
+            return
+
+        logger.info(f"💾 Iniciando guardado de video: {data['filename']}")
+        writer = None
+        try:
+            frames = data['frames']
+            if not frames:
+                logger.warning("⚠️ No hay frames para guardar")
+                return
+            
+            logger.info(f"📊 Frames a procesar: {len(frames)}")
+            
+            # Crear el directorio si no existe
+            os.makedirs(os.path.dirname(data['full_path']), exist_ok=True)
+            
+            # Configurar escritor de video con configuración más robusta
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            writer = cv2.VideoWriter(
+                data['full_path'], 
+                fourcc, 
+                RECORDING_FPS, 
+                (width, height),
+                True  # isColor
+            )
+            
+            if not writer.isOpened():
+                logger.error("❌ No se pudo abrir el escritor de video")
+                return
+            
+            # Escribir frames con validación
+            frames_written = 0
+            for i, frame in enumerate(frames):
+                if frame is not None and frame.shape == (height, width, 3):
+                    writer.write(frame)
+                    frames_written += 1
+                else:
+                    logger.warning(f"⚠️ Frame {i} inválido o None")
+            
+            logger.info(f"✅ Frames escritos: {frames_written}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error escribiendo video: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            return
+        finally:
+            if writer:
+                writer.release()
         
         try:
-            # Configurar escritor de video
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            writer = cv2.VideoWriter(data['full_path'], fourcc, RECORDING_FPS, (width, height))
-            
-            # Escribir todos los frames
-            for frame in frames:
-                if frame is not None:
-                    writer.write(frame)
-            
-            writer.release()
-            
-            # Crear JSON con información de la grabación
+            # Crear y guardar JSON
             json_data = {
                 'video_id': data['video_id'],
                 'filename': data['filename'],
                 'video_path': data['video_path'],
+                'timestamp': datetime.now().isoformat(),
                 'detections': data['detections']
             }
             
-            # Guardar JSON
             json_path = data['full_path'].replace('.mp4', '.json')
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(json_data, f, indent=2, ensure_ascii=False)
             
-            print(f"✅ Grabación guardada: {data['filename']}")
-            print(f"📊 Detecciones: {len(data['detections'])}")
+            logger.info(f"✅ Grabación guardada: {data['filename']}")
+            logger.info(f"📊 Detecciones: {len(data['detections'])}")
             
         except Exception as e:
-            print(f"❌ Error guardando grabación: {e}")
+            logger.error(f"❌ Error guardando JSON: {e}")
+            import traceback
+            logger.error(f"❌ Traceback JSON: {traceback.format_exc()}")
     
-    # Ejecutar en hilo separado para no bloquear el video
-    threading.Thread(target=save_worker, daemon=True).start()
+    # Ejecutar en hilo separado
+    save_thread = threading.Thread(target=save_worker, daemon=True)
+    save_thread.start()
+    logger.info("🔄 Hilo de guardado iniciado")
+
+def cleanup_resources():
+    """Limpiar recursos al cerrar"""
+    global process, cap, recording_active, current_recording_data
+    
+    logger.info("🔄 Limpiando recursos...")
+    
+    # Finalizar grabación activa
+    with recording_lock:
+        if recording_active and current_recording_data:
+            logger.info("🔄 Finalizando grabación pendiente...")
+            save_recording()
+            time.sleep(3)  # Dar más tiempo para que se guarde
+    
+    # Cerrar ventanas
+    if SHOW_VIDEO_WINDOW:
+        cv2.destroyAllWindows()
+    
+    # Cerrar captura de video
+    if cap:
+        cap.release()
+    
+    # Cerrar proceso FFmpeg
+    if process:
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except:
+            if process.poll() is not None:
+                process.kill()
+        finally:
+            if hasattr(process, 'stdout') and process.stdout:
+                process.stdout.close()
 
 # ================================
 # CONFIGURACIÓN DE ENTRADA FLEXIBLE
 # ================================
-if USE_VIDEO_FILE:
-    print(f"📹 Usando video local: {VIDEO_FILE_PATH}")
-    cap = cv2.VideoCapture(VIDEO_FILE_PATH)
-    if not cap.isOpened():
-        print(f"❌ Error: No se pudo abrir el video {VIDEO_FILE_PATH}")
-        exit()
-    
-    # Obtener dimensiones del video
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps_video = cap.get(cv2.CAP_PROP_FPS)
-    
-    print(f"📊 Video: {width}x{height}, {total_frames} frames, {fps_video:.1f} FPS")
-    
-    def get_frame():
-        ret, frame = cap.read()
-        if not ret:
-            return None
-        # Redimensionar si es necesario
-        if frame.shape[:2] != (height, width):
-            frame = cv2.resize(frame, (width, height))
-        return frame
+try:
+    if USE_VIDEO_FILE:
+        if not VIDEO_FILE_PATH or not os.path.exists(VIDEO_FILE_PATH):
+            logger.error(f"❌ Video file no encontrado: {VIDEO_FILE_PATH}")
+            sys.exit(1)
         
-else:
-    print(f"📡 Usando stream RTSP: {RTSP_URL}")
-    # Inicia proceso FFmpeg
-    process = (
-        ffmpeg
-        .input(RTSP_URL, rtsp_transport='tcp', rtsp_flags='prefer_tcp')
-        .output('pipe:', format='rawvideo', pix_fmt='bgr24')
-        .run_async(pipe_stdout=True, pipe_stderr=True)
-    )
-    
-    def get_frame():
-        in_bytes = process.stdout.read(frame_size)
-        if not in_bytes:
-            return None
-        return np.frombuffer(in_bytes, np.uint8).reshape([height, width, 3]).copy()
+        logger.info(f"📹 Usando video local: {VIDEO_FILE_PATH}")
+        cap = cv2.VideoCapture(VIDEO_FILE_PATH)
+        
+        if not cap.isOpened():
+            logger.error(f"❌ Error: No se pudo abrir el video {VIDEO_FILE_PATH}")
+            sys.exit(1)
+        
+        # Obtener dimensiones del video
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps_video = cap.get(cv2.CAP_PROP_FPS)
+        
+        logger.info(f"📊 Video: {width}x{height}, {total_frames} frames, {fps_video:.1f} FPS")
+        
+        def get_frame():
+            if not cap or not cap.isOpened():
+                return None
+            ret, frame = cap.read()
+            if not ret:
+                return None
+            if frame.shape[:2] != (height, width):
+                frame = cv2.resize(frame, (width, height))
+            return frame
+            
+    else:
+        if not RTSP_URL:
+            logger.error("❌ RTSP_URL no configurada")
+            sys.exit(1)
+        
+        logger.info(f"📡 Usando stream RTSP: {RTSP_URL}")
+        
+        # Configuración más robusta para FFmpeg
+        process = (
+            ffmpeg
+            .input(RTSP_URL, 
+                   rtsp_transport='tcp', 
+                   rtsp_flags='prefer_tcp',
+                   analyzeduration=1000000,
+                   probesize=1000000)
+            .output('pipe:', 
+                   format='rawvideo', 
+                   pix_fmt='bgr24',
+                   s=f'{width}x{height}')
+            .run_async(pipe_stdout=True, pipe_stderr=True, quiet=True)
+        )
+        
+        def get_frame():
+            if not process or process.poll() is not None:
+                return None
+            try:
+                in_bytes = process.stdout.read(frame_size)
+                if len(in_bytes) != frame_size:
+                    return None
+                return np.frombuffer(in_bytes, np.uint8).reshape([height, width, 3]).copy()
+            except Exception as e:
+                logger.error(f"Error leyendo frame: {e}")
+                return None
 
-print("✅ Modelo cargado y conexión a la fuente iniciada...")
+except Exception as e:
+    logger.error(f"❌ Error configurando entrada: {e}")
+    sys.exit(1)
+
+logger.info("✅ Modelo cargado y conexión a la fuente iniciada...")
 
 def log_detection(label, confidence, timestamp):
     """Registrar detecciones importantes"""
     if label in security_classes and confidence > 0.5:
-        print(f"🚨 ALERTA: {label} detectado con {confidence:.0%} de confianza a las {timestamp}")
+        logger.info(f"🚨 ALERTA: {label} detectado con {confidence:.0%} de confianza a las {timestamp}")
 
 # ================================
-# BUCLE PRINCIPAL (IDÉNTICO PARA AMBAS FUENTES)
+# BUCLE PRINCIPAL
 # ================================
-while True:
-    frame = get_frame()
-    if frame is None:
-        print("⚠️ No se recibió frame, saliendo...")
-        break
-
-    frame_count += 1
-    # Limpiar objetos antiguos cada 100 frames
-    if frame_count % 100 == 0:
-        cleanup_old_objects(time.time())
-
-    current_frame_time = (frame_count - 1) / RECORDING_FPS if USE_VIDEO_FILE else time.time() - start_time
-    
-    # Añadir frame al buffer circular
-    frame_buffer.append(frame.copy())
-    
-    # Si estamos grabando, añadir frame a la grabación
-    if recording_active and current_recording_data:
-        current_recording_data['frames'].append(frame.copy())
-        
-        # Verificar si debemos parar la grabación (10 segundos después de la ÚLTIMA detección)
-        if last_detection_time and time.time() - last_detection_time > RECORDING_DURATION:
-            print("🛑 Finalizando grabación (10s sin detecciones)...")
-            save_recording()
-            recording_active = False
-            current_recording_data = None
-            last_detection_time = None
-    
-    # OPTIMIZACIÓN: Procesar cada N frames para mejor rendimiento
-    # Procesar cada 4 frames
-    if frame_count % 4 == 0:
-        # Detectar objetos con YOLO
-        results = model(frame, verbose=False, conf=0.4)[0]  # Confianza mínima 40%
-        
-        current_time = datetime.now().strftime("%H:%M:%S")
-        detection_found = False
-        
-        for box in results.boxes:
-            cls_id = int(box.cls[0])
-            label = model.names[cls_id]
-            conf = float(box.conf[0])
-
-            # Filtrar solo clases importantes para seguridad
-            if label not in security_classes and conf < 0.5:
+try:
+    while not shutdown_requested:
+        frame = get_frame()
+        if frame is None:
+            logger.warning("⚠️ No se recibió frame")
+            if USE_VIDEO_FILE:
+                break  # Final del video
+            else:
+                time.sleep(0.1)
                 continue
 
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            center_pos = get_box_center(x1, y1, x2, y2)
-            
-            # Verificar si es un objeto estático
-            if conf >= MIN_CONFIDENCE_FOR_TRACKING:
-                is_static = is_object_static(label, center_pos, conf, time.time())
+        frame_count += 1
+        
+        # Limpiar objetos antiguos cada 100 frames
+        if frame_count % 100 == 0:
+            cleanup_old_objects(time.time())
+
+        current_frame_time = (frame_count - 1) / RECORDING_FPS if USE_VIDEO_FILE else time.time() - start_time
+        
+        # Añadir frame al buffer circular
+        frame_buffer.append(frame.copy())
+        
+        # Manejo de grabación con thread safety MEJORADO
+        with recording_lock:
+            if recording_active and current_recording_data:
+                # Agregar frame a la grabación actual
+                current_recording_data['frames'].append(frame.copy())
                 
-                if is_static:
-                    # Objeto estático - dibujar con color diferente pero no grabar
-                    color = (128, 128, 128)  # Gris para objetos estáticos
-                    thickness = 1
+                # Verificar si debemos parar la grabación
+                if last_detection_time and time.time() - last_detection_time > RECORDING_DURATION:
+                    logger.info(f"🛑 Finalizando grabación después de {RECORDING_DURATION}s sin detecciones")
+                    save_recording()
+                    # IMPORTANTE: Solo limpiar después de iniciar el guardado
+                    recording_active = False
+                    current_recording_data = None
+                    last_detection_time = None
+        
+        # Procesar cada 4 frames para mejor rendimiento
+        if frame_count % 4 == 0:
+            try:
+                results = model(frame, verbose=False, conf=0.4)[0]
+                
+                current_time = datetime.now().strftime("%H:%M:%S")
+                detection_found = False
+                
+                for box in results.boxes:
+                    cls_id = int(box.cls[0])
+                    label = model.names[cls_id]
+                    conf = float(box.conf[0])
+
+                    # Filtrar solo clases importantes
+                    if label not in security_classes and conf < 0.5:
+                        continue
+
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    center_pos = get_box_center(x1, y1, x2, y2)
+                    
+                    # Verificar si es objeto estático
+                    if conf >= MIN_CONFIDENCE_FOR_TRACKING:
+                        is_static = is_object_static(label, center_pos, conf, time.time())
+                        
+                        if is_static:
+                            # Objeto estático - dibujar en gris
+                            color = (128, 128, 128)
+                            thickness = 1
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+                            
+                            text = f'{label} {conf:.0%} [STATIC]'
+                            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+                            cv2.rectangle(frame, (x1, y1-25), (x1 + text_size[0], y1), color, -1)
+                            cv2.putText(frame, text, (x1, y1-8),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                            continue
+
+                    detection_found = True
+                    color = class_colors.get(label, (255, 255, 255))
+                    thickness = 3 if label in security_classes else 2
+                    
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
                     
-                    text = f'{label} {conf:.0%} [STATIC]'
-                    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
-                    cv2.rectangle(frame, (x1, y1-25), (x1 + text_size[0], y1), color, -1)
-                    cv2.putText(frame, text, (x1, y1-8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                    continue  # No procesar como detección activa
+                    text = f'{label} {conf:.0%}'
+                    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                    cv2.rectangle(frame, (x1, y1-30), (x1 + text_size[0], y1), color, -1)
+                    cv2.putText(frame, text, (x1, y1-10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                    
+                    log_detection(label, conf, current_time)
+                    
+                    detection_info = {
+                        'timestamp': current_frame_time,
+                        'class': label,
+                        'confidence': conf * 100
+                    }
+                    
+                    if label in security_classes and conf > 0.5:
+                        start_recording(detection_info)
+                        
+            except Exception as e:
+                logger.error(f"Error en detección: {e}")
 
-            detection_found = True
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            color = class_colors.get(label, (255, 255, 255))
+        # Indicador visual de grabación
+        if recording_active:
+            cv2.circle(frame, (width - 30, 30), 15, (0, 0, 255), -1)
+            cv2.putText(frame, "REC", (width - 50, 40),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-            # Dibujar rectángulo más grueso para objetos importantes
-            thickness = 3 if label in security_classes else 2
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
-            
-            # Texto con fondo para mejor visibilidad
-            text = f'{label} {conf:.0%}'
-            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-            cv2.rectangle(frame, (x1, y1-30), (x1 + text_size[0], y1), color, -1)
-            cv2.putText(frame, text, (x1, y1-10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-            
-            # Log de detecciones importantes
-            log_detection(label, conf, current_time)
-            
-            # Crear información de detección para grabación
-            detection_info = {
-                'timestamp': current_frame_time,
-                'class': label,
-                'confidence': conf * 100  # Convertir a porcentaje
-            }
-            
-            # Iniciar grabación si detectamos algo importante
-            if label in security_classes and conf > 0.5:
-                start_recording(detection_info)
+        # Información de estado
+        source_info = f"Video: {os.path.basename(VIDEO_FILE_PATH)}" if USE_VIDEO_FILE else "RTSP Stream"
+        cv2.putText(frame, source_info, (10, height-50),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-    # Indicador visual de grabación
-    if recording_active:
-        cv2.circle(frame, (width - 30, 30), 15, (0, 0, 255), -1)  # Círculo rojo
-        cv2.putText(frame, "REC", (width - 50, 40),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        with tracked_objects_lock:
+            tracked_count = len([obj for obj in tracked_objects.values() 
+                               if time.time() - obj['last_seen'] < 2])
+        cv2.putText(frame, f"Tracked: {tracked_count}", (10, height-20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+               
+        # Mostrar frame
+        if SHOW_VIDEO_WINDOW:
+            cv2.imshow("Cámara de Seguridad - YOLO", frame)
 
-    # Mostrar información de la fuente
-    source_info = f"Video: {os.path.basename(VIDEO_FILE_PATH)}" if USE_VIDEO_FILE else "RTSP Stream"
-    cv2.putText(frame, source_info, (10, height-50),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        # Control de velocidad para video
+        if USE_VIDEO_FILE:
+            time.sleep(1.0 / fps_video if fps_video > 0 else 0.033)
 
-    # Mostrar información de objetos rastreados
-    tracked_count = len([obj for obj in tracked_objects.values() 
-                        if time.time() - obj['last_seen'] < 2])
-    cv2.putText(frame, f"Tracked: {tracked_count}", (10, height-20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-           
-    # Mostrar frame
-    if SHOW_VIDEO_WINDOW:
-        cv2.imshow("Cámara de Seguridad - YOLO", frame)
+        if SHOW_VIDEO_WINDOW:
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                logger.info("🛑 Salida solicitada por el usuario.")
+                break
 
-    # Para video: controlar velocidad de reproducción
-    if USE_VIDEO_FILE:
-        # Pausar entre frames para simular velocidad real del video
-        time.sleep(1.0 / fps_video if fps_video > 0 else 0.033)
+except KeyboardInterrupt:
+    logger.info("🛑 Interrupción por teclado")
+except Exception as e:
+    logger.error(f"❌ Error en bucle principal: {e}")
+finally:
+    cleanup_resources()
 
-    if SHOW_VIDEO_WINDOW:
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print("🛑 Salida solicitada por el usuario.")
-            break
-
-# ================================
-# LIMPIEZA
-# ================================
-# Finalizar grabación activa si existe
-if recording_active and current_recording_data:
-    print("🔄 Finalizando grabación pendiente...")
-    save_recording()
-
-if USE_VIDEO_FILE:
-    cap.release()
-else:
-    try:
-        process.terminate()
-        process.wait(timeout=5)
-    except:
-        process.kill()
-    finally:
-        if process.stdout:
-            process.stdout.close()
-
-cv2.destroyAllWindows()
-print(f"📊 Procesados {frame_count} frames total")
+logger.info(f"📊 Procesados {frame_count} frames total")
+logger.info("🏁 Aplicación terminada correctamente")

@@ -113,7 +113,7 @@ start_time = time.time()
 frame_buffer = deque(maxlen=PRE_RECORDING_BUFFER * RECORDING_FPS)
 last_detection_time = None
 
-# Lock para thread safety en grabación
+# Lock para thread safety en grabación - MUY IMPORTANTE
 recording_lock = threading.Lock()
 
 # ================================
@@ -225,29 +225,42 @@ def start_recording(detection_info):
         logger.info(f"🎥 Iniciando grabación: {filename}")
 
 def save_recording():
-    """Guardar video y JSON en un hilo separado"""
+    """Guardar video y JSON en un hilo separado - VERSIÓN CORREGIDA"""
     global current_recording_data
     
-    if not current_recording_data:
-        return
-    
     def save_worker():
+        # SOLUCION: Crear copia local INMEDIATAMENTE con el lock
         data = None
         with recording_lock:
             if current_recording_data:
-                data = current_recording_data.copy()
-                # Hacer copia profunda de los frames
-                data['frames'] = current_recording_data['frames'].copy()
+                logger.info(f"📦 Preparando datos para guardar: {current_recording_data['filename']}")
+                # Hacer copia completa de los datos
+                data = {
+                    'video_id': current_recording_data['video_id'],
+                    'filename': current_recording_data['filename'],
+                    'video_path': current_recording_data['video_path'],
+                    'full_path': current_recording_data['full_path'],
+                    'detections': current_recording_data['detections'].copy(),
+                    'start_time': current_recording_data['start_time'],
+                    'frames': current_recording_data['frames'].copy()  # Copia de la lista de frames
+                }
+            else:
+                logger.warning("⚠️ No hay current_recording_data para guardar")
+                return
         
         if not data:
+            logger.warning("⚠️ No se pudieron copiar los datos de grabación")
             return
-        
+
+        logger.info(f"💾 Iniciando guardado de video: {data['filename']}")
         writer = None
         try:
             frames = data['frames']
             if not frames:
-                logger.warning("No hay frames para guardar")
+                logger.warning("⚠️ No hay frames para guardar")
                 return
+            
+            logger.info(f"📊 Frames a procesar: {len(frames)}")
             
             # Crear el directorio si no existe
             os.makedirs(os.path.dirname(data['full_path']), exist_ok=True)
@@ -263,20 +276,24 @@ def save_recording():
             )
             
             if not writer.isOpened():
-                logger.error("No se pudo abrir el escritor de video")
+                logger.error("❌ No se pudo abrir el escritor de video")
                 return
             
             # Escribir frames con validación
             frames_written = 0
-            for frame in frames:
+            for i, frame in enumerate(frames):
                 if frame is not None and frame.shape == (height, width, 3):
                     writer.write(frame)
                     frames_written += 1
+                else:
+                    logger.warning(f"⚠️ Frame {i} inválido o None")
             
-            logger.info(f"Frames escritos: {frames_written}")
+            logger.info(f"✅ Frames escritos: {frames_written}")
             
         except Exception as e:
             logger.error(f"❌ Error escribiendo video: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return
         finally:
             if writer:
@@ -301,9 +318,13 @@ def save_recording():
             
         except Exception as e:
             logger.error(f"❌ Error guardando JSON: {e}")
+            import traceback
+            logger.error(f"❌ Traceback JSON: {traceback.format_exc()}")
     
     # Ejecutar en hilo separado
-    threading.Thread(target=save_worker, daemon=True).start()
+    save_thread = threading.Thread(target=save_worker, daemon=True)
+    save_thread.start()
+    logger.info("🔄 Hilo de guardado iniciado")
 
 def cleanup_resources():
     """Limpiar recursos al cerrar"""
@@ -312,10 +333,11 @@ def cleanup_resources():
     logger.info("🔄 Limpiando recursos...")
     
     # Finalizar grabación activa
-    if recording_active and current_recording_data:
-        logger.info("🔄 Finalizando grabación pendiente...")
-        save_recording()
-        time.sleep(2)  # Dar tiempo para que se guarde
+    with recording_lock:
+        if recording_active and current_recording_data:
+            logger.info("🔄 Finalizando grabación pendiente...")
+            save_recording()
+            time.sleep(3)  # Dar más tiempo para que se guarde
     
     # Cerrar ventanas
     if SHOW_VIDEO_WINDOW:
@@ -331,7 +353,7 @@ def cleanup_resources():
             process.terminate()
             process.wait(timeout=5)
         except:
-            if process.poll() is None:
+            if process.poll() is not None:
                 process.kill()
         finally:
             if hasattr(process, 'stdout') and process.stdout:
@@ -441,16 +463,17 @@ try:
         # Añadir frame al buffer circular
         frame_buffer.append(frame.copy())
         
-        # Manejo de grabación con thread safety
+        # Manejo de grabación con thread safety MEJORADO
         with recording_lock:
             if recording_active and current_recording_data:
-                with current_recording_data.get('frames_lock', threading.Lock()):
-                    current_recording_data['frames'].append(frame.copy())
+                # Agregar frame a la grabación actual
+                current_recording_data['frames'].append(frame.copy())
                 
                 # Verificar si debemos parar la grabación
                 if last_detection_time and time.time() - last_detection_time > RECORDING_DURATION:
                     logger.info(f"🛑 Finalizando grabación después de {RECORDING_DURATION}s sin detecciones")
                     save_recording()
+                    # IMPORTANTE: Solo limpiar después de iniciar el guardado
                     recording_active = False
                     current_recording_data = None
                     last_detection_time = None
