@@ -17,6 +17,7 @@ import math
 import signal
 import sys
 import logging
+import subprocess
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -229,41 +230,42 @@ def start_recording(detection_info):
         logger.info(f"🎥 Iniciando grabación: {filename}")
 
 def save_recording_sync(recording_data):
-    """Guardar video y JSON de forma síncrona - para cleanup"""
+    """Guardar video con OpenCV y optimizar con FFmpeg, luego guardar JSON."""
     if not recording_data:
         logger.warning("⚠️ No hay datos de grabación para guardar síncronamente")
         return False
-        
+
     logger.info(f"💾 Guardado síncrono de video: {recording_data['filename']}")
     writer = None
     success = False
-    
+
     try:
         frames = recording_data['frames']
         if not frames:
             logger.warning("⚠️ No hay frames para guardar")
             return False
-        
+
         logger.info(f"📊 Frames a procesar: {len(frames)}")
-        
-        # Crear el directorio si no existe
+
         os.makedirs(os.path.dirname(recording_data['full_path']), exist_ok=True)
-        
-        # Configurar escritor de video con configuración más robusta
+
+        temp_video_path = recording_data['full_path'].replace('.mp4', '_temp.mp4')
+        output_path = recording_data['full_path']
+
+        # Configurar escritor OpenCV
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(
-            recording_data['full_path'], 
-            fourcc, 
-            RECORDING_FPS, 
+            temp_video_path,
+            fourcc,
+            RECORDING_FPS,
             (width, height),
-            True  # isColor
+            True
         )
-        
+
         if not writer.isOpened():
             logger.error("❌ No se pudo abrir el escritor de video")
             return False
-        
-        # Escribir frames con validación
+
         frames_written = 0
         for i, frame in enumerate(frames):
             if frame is not None and frame.shape == (height, width, 3):
@@ -271,10 +273,10 @@ def save_recording_sync(recording_data):
                 frames_written += 1
             else:
                 logger.warning(f"⚠️ Frame {i} inválido o None")
-        
+
         logger.info(f"✅ Frames escritos: {frames_written}")
         success = True
-        
+
     except Exception as e:
         logger.error(f"❌ Error escribiendo video: {e}")
         import traceback
@@ -283,34 +285,61 @@ def save_recording_sync(recording_data):
     finally:
         if writer:
             writer.release()
-    
-    # Guardar JSON solo si el video se guardó exitosamente
+
+    # Convertir con FFmpeg si el video se guardó exitosamente
     if success:
         try:
-            # Crear y guardar JSON
-            json_data = {
-                'video_id': recording_data['video_id'],
-                'filename': recording_data['filename'],
-                'video_path': recording_data['video_path'],
-                'timestamp': datetime.now().isoformat(),
-                'detections': recording_data['detections']
-            }
-            
-            json_path = recording_data['full_path'].replace('.mp4', '.json')
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(json_data, f, indent=2, ensure_ascii=False)
-            
-            logger.info(f"✅ Grabación y JSON guardados síncronamente: {recording_data['filename']}")
-            logger.info(f"📊 Detecciones: {len(recording_data['detections'])}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error guardando JSON: {e}")
-            import traceback
-            logger.error(f"❌ Traceback JSON: {traceback.format_exc()}")
+            cmd = [
+                'ffmpeg', '-i', temp_video_path,
+                '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-movflags', '+faststart',
+                '-pix_fmt', 'yuv420p',
+                '-y',
+                output_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                logger.info(f"✅ Video optimizado guardado en: {output_path}")
+                os.remove(temp_video_path)  # Limpiar temporal
+            else:
+                logger.error("❌ Error: el archivo de salida FFmpeg no es válido")
+                return False
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ Error ejecutando FFmpeg: {e.stderr}")
             return False
-    
-    return False
+        except Exception as e:
+            logger.error(f"❌ Excepción en FFmpeg: {e}")
+            return False
+
+    # Guardar JSON
+    try:
+        json_data = {
+            'video_id': recording_data['video_id'],
+            'filename': recording_data['filename'],
+            'video_path': recording_data['video_path'],
+            'timestamp': datetime.now().isoformat(),
+            'detections': recording_data['detections']
+        }
+
+        json_path = recording_data['full_path'].replace('.mp4', '.json')
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(json_data, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"✅ JSON guardado: {json_path}")
+        logger.info(f"📊 Detecciones: {len(recording_data['detections'])}")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Error guardando JSON: {e}")
+        import traceback
+        logger.error(f"❌ Traceback JSON: {traceback.format_exc()}")
+        return False
 
 def save_recording(current_recording_data=None):
     """Guardar video y JSON en un hilo separado - VERSIÓN CORREGIDA"""
