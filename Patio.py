@@ -61,7 +61,7 @@ except Exception as e:
 # ================================
 USE_VIDEO_FILE = os.getenv('USE_VIDEO_FILE', 'False') == 'True'
 VIDEO_FILE_PATH = os.getenv('VIDEO_FILE_PATH')
-RTSP_URL = os.getenv('RTSP_URL_FRENTE')
+RTSP_URL = os.getenv('RTSP_URL_PATIO')
 
 # ================================
 # CONFIGURACIÓN DE GRABACIÓN
@@ -207,7 +207,7 @@ def start_recording(detection_info):
         now = datetime.now()
         video_id = generate_video_id()
         
-        filename = f"motion_frente_{now.strftime('%Y%m%d')}_{video_id}.mp4"
+        filename = f"motion_patio_{now.strftime('%Y%m%d')}_{video_id}.mp4"
         recording_dir = create_recording_path()
         full_path = os.path.join(recording_dir, filename)
         relative_path = os.path.relpath(full_path, RECORDINGS_BASE_DIR)
@@ -638,7 +638,7 @@ try:
         # Procesar cada 4 frames para mejor rendimiento
         if frame_count % 4 == 0:
             try:
-                results = model(frame, verbose=False, conf=0.4)[0]
+                results = model(frame, verbose=False, conf=0.4, agnostic_nms=True, max_det=100)[0]
                 
                 current_time = datetime.now().strftime("%H:%M:%S")
                 detection_found = False

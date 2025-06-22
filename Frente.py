@@ -638,7 +638,7 @@ try:
         # Procesar cada 4 frames para mejor rendimiento
         if frame_count % 4 == 0:
             try:
-                results = model(frame, verbose=False, conf=0.4)[0]
+                results = model(frame, verbose=False, conf=0.4, agnostic_nms=True, max_det=100)[0]
                 
                 current_time = datetime.now().strftime("%H:%M:%S")
                 detection_found = False
