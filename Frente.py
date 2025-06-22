@@ -511,20 +511,56 @@ try:
         process = (
             ffmpeg
             .input(RTSP_URL, 
-                   rtsp_transport='tcp', 
-                   rtsp_flags='prefer_tcp',
-                   analyzeduration=1000000,
-                   probesize=1000000)
+                rtsp_transport='tcp', 
+                rtsp_flags='prefer_tcp',
+                analyzeduration=100000,  # Reducir de 1000000
+                probesize=100000,        # Reducir de 1000000
+                fflags='nobuffer',       # Añadir para reducir buffering
+                flags='low_delay',       # Añadir para baja latencia
+                thread_queue_size=512)   # Añadir buffer de thread
             .output('pipe:', 
-                   format='rawvideo', 
-                   pix_fmt='bgr24',
-                   s=f'{width}x{height}')
+                format='rawvideo', 
+                pix_fmt='bgr24',
+                s=f'{width}x{height}',
+                tune='zerolatency')      # Añadir para streaming
             .run_async(pipe_stdout=True, pipe_stderr=True, quiet=True)
         )
         
         def get_frame():
+            global process
             if not process or process.poll() is not None:
-                return None
+                # Reconectar automáticamente
+                logger.info("🔄 Reconectando stream...")
+                if process:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=2)
+                    except:
+                        pass
+                
+                # Recrear proceso con configuración optimizada
+                try:
+                    process = (
+                        ffmpeg
+                        .input(RTSP_URL, 
+                            rtsp_transport='tcp', 
+                            rtsp_flags='prefer_tcp',
+                            analyzeduration=100000,
+                            probesize=100000,
+                            fflags='nobuffer',
+                            flags='low_delay',
+                            thread_queue_size=512)
+                        .output('pipe:', 
+                            format='rawvideo', 
+                            pix_fmt='bgr24',
+                            s=f'{width}x{height}',
+                            tune='zerolatency')
+                        .run_async(pipe_stdout=True, pipe_stderr=True, quiet=True)
+                    )
+                except Exception as e:
+                    logger.error(f"Error recreando proceso FFmpeg: {e}")
+                    return None
+                
             try:
                 in_bytes = process.stdout.read(frame_size)
                 if len(in_bytes) != frame_size:
@@ -549,15 +585,28 @@ def log_detection(label, confidence, timestamp):
 # BUCLE PRINCIPAL
 # ================================
 try:
+    frame_timeout = 0
+    max_timeout = 30  # 30 frames sin datos = reconectar
+
     while not shutdown_requested:
         frame = get_frame()
         if frame is None:
             logger.warning("⚠️ No se recibió frame")
+
             if USE_VIDEO_FILE:
-                break  # Final del video
+                break
             else:
-                time.sleep(0.1)
                 continue
+
+            frame_timeout += 1
+            if frame_timeout > max_timeout:
+                logger.warning("⚠️ Timeout de frames, reiniciando conexión")
+                if process:
+                    process.terminate()
+                    process = None
+                frame_timeout = 0
+            time.sleep(0.1)
+            continue
 
         frame_count += 1
         
