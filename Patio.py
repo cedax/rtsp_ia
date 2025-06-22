@@ -6,6 +6,7 @@ import cv2
 import logging
 import time
 import sys
+from yolo_detector import YOLODetector
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,6 +18,7 @@ load_dotenv()
 # Variables globales
 process = None
 cap = None
+detector = None
 
 # ================================
 # CONFIGURACIÓN DESDE .ENV
@@ -30,11 +32,27 @@ SHOW_VIDEO_WINDOW = os.getenv("SHOW_VIDEO_WINDOW", "True").lower() == "true"
 width, height = 1280, 720
 frame_size = width * height * 3
 
+def initialize_detector():
+    """Inicializar detector YOLO"""
+    global detector
+    try:
+        detector = YOLODetector()
+        detector.start_processing()
+        logger.info("✅ Detector YOLO inicializado")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Error inicializando detector: {e}")
+        return False
+
 def cleanup_resources():
     """Limpiar todos los recursos"""
-    global process, cap
+    global process, cap, detector
     
     logger.info("🔄 Limpiando recursos...")
+
+    # Detener detector YOLO
+    if detector:
+        detector.stop_processing()
     
     # Cerrar ventanas si están abiertas
     if SHOW_VIDEO_WINDOW:
@@ -172,9 +190,29 @@ def get_frame():
             return None
 
 def display_frame(frame, window_title="Video Stream"):
-    """Mostrar frame si está habilitado en configuración"""
-    if SHOW_VIDEO_WINDOW and frame is not None:
-        cv2.imshow(window_title, frame)
+    """Mostrar frame con detecciones si está habilitado"""
+    global detector
+    
+    processed_frame = frame
+    
+    # Si tenemos detector, procesar frame
+    if detector:
+        # OPCIÓN 1: Procesamiento asíncrono (recomendado para mejor rendimiento)
+        # Enviar frame para detección en hilo separado
+        detector.add_frame_for_detection(frame)
+        
+        # Obtener detecciones más recientes si están disponibles
+        result = detector.get_latest_detections()
+        if result:
+            frame_id, detections = result
+            processed_frame = detector.draw_detections(frame, detections)
+        
+        # OPCIÓN 2: Procesamiento síncrono (más simple pero puede ser más lento)
+        # processed_frame, detections = detector.process_frame_sync(frame)
+    
+    # Mostrar frame solo si está habilitado
+    if SHOW_VIDEO_WINDOW and processed_frame is not None:
+        cv2.imshow(window_title, processed_frame)
         return cv2.waitKey(1) & 0xFF
     return -1
 
@@ -184,6 +222,11 @@ if __name__ == "__main__":
         # Configurar fuente de video
         if not setup_video_source():
             logger.error("❌ No se pudo configurar la fuente de video")
+            sys.exit(1)
+
+        # Inicializar detector YOLO
+        if not initialize_detector():
+            logger.error("❌ No se pudo inicializar el detector")
             sys.exit(1)
         
         logger.info("🚀 Iniciando captura de frames...")
@@ -216,8 +259,11 @@ if __name__ == "__main__":
             cv2.putText(frame, info_text, (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
-            # Mostrar frame si está habilitado
-            key = display_frame(frame, "Cámara de Seguridad")
+            # Mostrar frame SIN detecciones YOLO
+            # key = display_frame(frame, "Cámara de Seguridad")
+
+            # Mostrar frame CON detecciones YOLO
+            key = display_frame(frame, "Cámara con Detección YOLO")
             
             # Salir con 'q'
             if key == ord('q'):

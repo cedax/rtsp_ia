@@ -2,3 +2,4 @@ recordings/
 templates
 yolov8n.pt
 .env
+__pycache__/
