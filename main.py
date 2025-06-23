@@ -26,24 +26,26 @@ last_detection_time = 0
 video_writer = None
 detection_log = []
 current_video_path = None
+conf_threshold = 0.5
 
 def generate_uid(length=10):
     return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
 
 def yolo_worker():
-    global detections, last_detection_time
+    global detections, last_detection_time, conf_threshold
     while not stop_event.is_set():
         try:
             frame = frame_queue.get(timeout=1)
-            results = model(frame, conf=0.6, iou=0.45, verbose=False)[0]
+            
+            results = model(frame, conf=conf_threshold, iou=0.45, verbose=False)[0]
             
             detections = [(int(b.xyxy[0][0]), int(b.xyxy[0][1]), int(b.xyxy[0][2]), int(b.xyxy[0][3]), 
                           model.names[int(b.cls[0])], float(b.conf[0])) for b in results.boxes]
             
-            if any(conf >= 0.6 for *_, conf in detections):
+            if any(conf >= conf_threshold for *_, conf in detections):
                 last_detection_time = time.time()
                 for *_, label, conf in detections:
-                    if conf >= 0.6:
+                    if conf >= conf_threshold:
                         print(f"Detectado: {label} con {conf*100:.2f}% de confianza")
             
             frame_queue.task_done()
@@ -97,15 +99,15 @@ try:
         # Dibujar detecciones
         annotated = frame.copy()
         for x1, y1, x2, y2, label, conf in detections:
-            if conf >= 0.6:
+            if conf >= conf_threshold:
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(annotated, f"{label} {conf*100:.1f}%", (x1, y1-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, conf_threshold, (0, 255, 0), 2)
         
         # Guardar detecciones si está grabando
         if recording and detections:
             timestamp = datetime.datetime.now().isoformat()
-            detection_log.extend([{"timestamp": timestamp, "label": label, "confidence": round(conf, 3)} for label, conf in detections if conf >= 0.6])
+            detection_log.extend([{"timestamp": timestamp, "label": label, "confidence": round(conf, 3), "box": [x1, y1, x2, y2]} for x1, y1, x2, y2, label, conf in detections if conf >= conf_threshold])
         
         # Control de grabación
         current_time = time.time()
@@ -124,7 +126,7 @@ try:
         if recording:
             cv2.putText(annotated, "GRABANDO", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         
-        cv2.imshow("Detección YOLO Auto-Record", annotated)
+        cv2.imshow("Camara", annotated)
         
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
