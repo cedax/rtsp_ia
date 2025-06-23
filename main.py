@@ -9,7 +9,7 @@ from ultralytics import YOLO
 model = YOLO("yolov8n.pt")
 
 # Configuración
-rtsp_url = "rtsp://IP/live/ch00_0"
+rtsp_url = "rtsp://sedax:_Pumasi10203900_@52.147.203.239:8450/live/ch00_0"
 width, height = 1280, 720
 
 # Comando FFmpeg
@@ -38,7 +38,16 @@ def yolo_worker():
     while not stop_event.is_set():
         try:
             frame = frame_queue.get(timeout=1)
-            results = model(frame, verbose=False)[0]
+            
+            #results = model(frame, verbose=False)[0]
+
+            results = model(
+                frame, 
+                conf=0.25,      # Umbral de confianza (default 0.25)
+                iou=0.45,       # Non-Maximum Suppression (default 0.45)
+                verbose=False
+            )[0]
+
             detections = []
 
             for box in results.boxes:
@@ -81,6 +90,7 @@ try:
 
         # Dibujar detecciones más recientes (si hay)
         annotated = frame.copy()
+
         for x1, y1, x2, y2, label, conf in latest_detections:
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(
