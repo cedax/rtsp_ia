@@ -5,209 +5,134 @@ import threading
 import queue
 import time
 import datetime
-from ultralytics import YOLO
+import json
+import os
 import secrets
 import string
-import os 
-
-# Cargar modelo YOLO
-model = YOLO("yolov8n.pt")
+from ultralytics import YOLO
 
 # Configuración
+model = YOLO("yolov8n.pt")
 rtsp_url = "rtsp://IP/live/ch00_0"
 width, height = 1280, 720
+command = ["ffmpeg", "-rtsp_transport", "tcp", "-i", rtsp_url, "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
 
-# Comando FFmpeg
-command = [
-    "ffmpeg",
-    "-rtsp_transport", "tcp",
-    "-i", rtsp_url,
-    "-f", "rawvideo",
-    "-pix_fmt", "bgr24",
-    "-"
-]
-
-# Colas
+# Variables globales
 frame_queue = queue.Queue(maxsize=1)
-
-# Bandera de parada
 stop_event = threading.Event()
-
-# Variables de grabación
-latest_detections = []
+detections = []
 recording = False
 last_detection_time = 0
 video_writer = None
 detection_log = []
 current_video_path = None
 
-def generar_uid(longitud=10):
-    caracteres = string.ascii_letters + string.digits  # A-Z, a-z, 0-9
-    return ''.join(secrets.choice(caracteres) for _ in range(longitud))
+def generate_uid(length=10):
+    return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
 
-# Hilo de YOLO
 def yolo_worker():
-    global latest_detections, last_detection_time
+    global detections, last_detection_time
     while not stop_event.is_set():
         try:
             frame = frame_queue.get(timeout=1)
+            results = model(frame, conf=0.6, iou=0.45, verbose=False)[0]
             
-            results = model(
-                frame, 
-                conf=0.6,       # Cambiar a 60% de confianza
-                iou=0.45,
-                verbose=False
-            )[0]
-
-            detections = []
-            high_conf_detected = False
-
-            for box in results.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                conf = float(box.conf[0])
-                cls = int(box.cls[0])
-                label = model.names[cls]
-                detections.append((x1, y1, x2, y2, label, conf))
-                
-                if conf >= 0.6:  # 60% o más
-                    high_conf_detected = True
-                    print(f"Detectado: {label} con {conf*100:.2f}% de confianza")
-
-            latest_detections = detections
+            detections = [(int(b.xyxy[0][0]), int(b.xyxy[0][1]), int(b.xyxy[0][2]), int(b.xyxy[0][3]), 
+                          model.names[int(b.cls[0])], float(b.conf[0])) for b in results.boxes]
             
-            # Actualizar tiempo de última detección si hay detección de alta confianza
-            if high_conf_detected:
+            if any(conf >= 0.6 for *_, conf in detections):
                 last_detection_time = time.time()
-                
+                for *_, label, conf in detections:
+                    if conf >= 0.6:
+                        print(f"Detectado: {label} con {conf*100:.2f}% de confianza")
+            
             frame_queue.task_done()
-        except queue.Empty:
-            continue
-        except Exception as e:
-            print(f"[YOLO ERROR] {e}")
+        except (queue.Empty, Exception) as e:
+            if not isinstance(e, queue.Empty):
+                print(f"[YOLO ERROR] {e}")
 
-# Función para iniciar grabación
 def start_recording():
     global video_writer, current_video_path, detection_log
-    detection_log = []  # reiniciar log de detecciones
-    uid = generar_uid()
+    detection_log = []
     now = datetime.datetime.now()
-    timestamp = now.strftime("%Y%m%d_%H%M%S")
-
     folder_path = os.path.join("recordings", str(now.year), f"{now.month:02d}", f"{now.day:02d}")
     os.makedirs(folder_path, exist_ok=True)
+    
+    filename = f"detection_{now.strftime('%Y%m%d_%H%M%S')}_{generate_uid()}.mp4"
+    current_video_path = os.path.join(folder_path, filename)
+    
+    video_writer = cv2.VideoWriter(current_video_path, cv2.VideoWriter_fourcc(*'mp4v'), 20.0, (width, height))
+    print(f"Iniciando grabación: {current_video_path}")
 
-    filename = f"detection_{timestamp}_{uid}.mp4"
-    full_path = os.path.join(folder_path, filename)
-    current_video_path = full_path  # guardar ruta
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    video_writer = cv2.VideoWriter(full_path, fourcc, 20.0, (width, height))
-
-    print(f"Iniciando grabación: {full_path}")
-    return full_path
-
-# Función para detener grabación
 def stop_recording():
     global video_writer, current_video_path, detection_log
     if video_writer:
         video_writer.release()
         video_writer = None
         print("Grabación detenida")
-
+        
         if current_video_path:
             json_path = os.path.splitext(current_video_path)[0] + ".json"
-            json_data = {
-                "video": os.path.basename(current_video_path),
-                "detections": detection_log
-            }
             with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(json_data, f, indent=2)
+                json.dump({"video": os.path.basename(current_video_path), "detections": detection_log}, f, indent=2)
             print(f"Detecciones guardadas en: {json_path}")
 
-# Iniciar hilo de detección
-thread = threading.Thread(target=yolo_worker, daemon=True)
-thread.start()
-
-# Iniciar FFmpeg
+# Iniciar hilo de detección y FFmpeg
+threading.Thread(target=yolo_worker, daemon=True).start()
 process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 try:
     while True:
-        # Leer frame
+        # Leer y procesar frame
         raw = process.stdout.read(width * height * 3)
         if len(raw) != width * height * 3:
-            print("No se pudo leer frame completo")
             break
-
+        
         frame = np.frombuffer(raw, np.uint8).reshape((height, width, 3))
-
-        # Enviar a detección solo si hay espacio
+        
+        # Enviar a detección
         if not frame_queue.full():
             frame_queue.put_nowait(frame.copy())
-
+        
         # Dibujar detecciones
         annotated = frame.copy()
-        for x1, y1, x2, y2, label, conf in latest_detections:
-            if conf >= 0.6:  # Solo mostrar detecciones de alta confianza
+        for x1, y1, x2, y2, label, conf in detections:
+            if conf >= 0.6:
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(
-                    annotated,
-                    f"{label} {conf*100:.1f}%",
-                    (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 0),
-                    2
-                )
+                cv2.putText(annotated, f"{label} {conf*100:.1f}%", (x1, y1-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         
         # Guardar detecciones si está grabando
-        if recording and latest_detections:
-            frame_timestamp = datetime.datetime.now().isoformat()
-            for x1, y1, x2, y2, label, conf in latest_detections:
-                if conf >= 0.6:
-                    detection_log.append({
-                        "timestamp": frame_timestamp,
-                        "label": label,
-                        "confidence": round(conf, 3),
-                        "box": [x1, y1, x2, y2]
-                    })
-
+        if recording and detections:
+            timestamp = datetime.datetime.now().isoformat()
+            detection_log.extend([{"timestamp": timestamp, "label": label, "confidence": round(conf, 3)} for label, conf in detections if conf >= 0.6])
+        
         # Control de grabación
         current_time = time.time()
-        
-        # Iniciar grabación si hay detección reciente y no está grabando
         if not recording and (current_time - last_detection_time) < 1:
             recording = True
             start_recording()
-        
-        # Detener grabación si han pasado 5 segundos sin detección
         elif recording and (current_time - last_detection_time) >= 5:
             recording = False
             stop_recording()
         
-        # Grabar frame si está en modo grabación
+        # Grabar frame
         if recording and video_writer:
             video_writer.write(annotated)
         
-        # Mostrar estado de grabación en pantalla
+        # Mostrar estado y video
         if recording:
-            cv2.putText(annotated, "GRABANDO", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-        # Mostrar video
+            cv2.putText(annotated, "GRABANDO", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        
         cv2.imshow("Detección YOLO Auto-Record", annotated)
-
-        # Salida con tecla 'q'
+        
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
 finally:
-    # Detener grabación si está activa
     if recording:
         stop_recording()
-    
     stop_event.set()
     process.terminate()
-    thread.join()
     cv2.destroyAllWindows()
     print("Sistema detenido")
