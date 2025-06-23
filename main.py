@@ -38,6 +38,8 @@ latest_detections = []
 recording = False
 last_detection_time = 0
 video_writer = None
+detection_log = []
+current_video_path = None
 
 def generar_uid(longitud=10):
     caracteres = string.ascii_letters + string.digits  # A-Z, a-z, 0-9
@@ -85,19 +87,19 @@ def yolo_worker():
 
 # Función para iniciar grabación
 def start_recording():
-    global video_writer
+    global video_writer, current_video_path, detection_log
+    detection_log = []  # reiniciar log de detecciones
     uid = generar_uid()
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y%m%d_%H%M%S")
 
-    # Carpeta: recordings/YYYY/MM/DD
     folder_path = os.path.join("recordings", str(now.year), f"{now.month:02d}", f"{now.day:02d}")
     os.makedirs(folder_path, exist_ok=True)
 
     filename = f"detection_{timestamp}_{uid}.mp4"
     full_path = os.path.join(folder_path, filename)
+    current_video_path = full_path  # guardar ruta
 
-    # Codificador mp4v para .mp4 (más compatible para web)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_writer = cv2.VideoWriter(full_path, fourcc, 20.0, (width, height))
 
@@ -106,11 +108,21 @@ def start_recording():
 
 # Función para detener grabación
 def stop_recording():
-    global video_writer
+    global video_writer, current_video_path, detection_log
     if video_writer:
         video_writer.release()
         video_writer = None
         print("Grabación detenida")
+
+        if current_video_path:
+            json_path = os.path.splitext(current_video_path)[0] + ".json"
+            json_data = {
+                "video": os.path.basename(current_video_path),
+                "detections": detection_log
+            }
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(json_data, f, indent=2)
+            print(f"Detecciones guardadas en: {json_path}")
 
 # Iniciar hilo de detección
 thread = threading.Thread(target=yolo_worker, daemon=True)
@@ -147,6 +159,18 @@ try:
                     (0, 255, 0),
                     2
                 )
+        
+        # Guardar detecciones si está grabando
+        if recording and latest_detections:
+            frame_timestamp = datetime.datetime.now().isoformat()
+            for x1, y1, x2, y2, label, conf in latest_detections:
+                if conf >= 0.6:
+                    detection_log.append({
+                        "timestamp": frame_timestamp,
+                        "label": label,
+                        "confidence": round(conf, 3),
+                        "box": [x1, y1, x2, y2]
+                    })
 
         # Control de grabación
         current_time = time.time()
