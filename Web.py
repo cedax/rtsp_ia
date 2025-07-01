@@ -8,7 +8,7 @@ from pathlib import Path
 app = Flask(__name__)
 
 # Configuración de rutas
-BASE_PATH = "/home/sedax/rtsp_ia"
+BASE_PATH = "C:/Users/chlopez/Desktop/CamaraSeguridad"
 RECORDINGS_PATH = os.path.join(BASE_PATH, "recordings")
 
 # Template HTML con diseño iOS
@@ -291,6 +291,11 @@ HTML_TEMPLATE = """
                 <option value="truck">🚛 Camión</option>
                 <option value="motorcycle">🏍️ Motocicleta</option>
                 <option value="bicycle">🚲 Bicicleta</option>
+                <option value="bear">🐻 Oso</option>
+                <option value="traffic light">🚦 Semáforo</option>
+                <option value="dog">🐕 Perro</option>
+                <option value="cat">🐱 Gato</option>
+                <option value="bird">🐦 Pájaro</option>
             </select>
         </div>
         <button class="btn" onclick="filterVideos()">Filtrar</button>
@@ -329,21 +334,21 @@ HTML_TEMPLATE = """
             const html = videos.map(video => {
                 const detectionCounts = {};
                 video.detections.forEach(detection => {
-                    detectionCounts[detection.class] = (detectionCounts[detection.class] || 0) + 1;
+                    detectionCounts[detection.label] = (detectionCounts[detection.label] || 0) + 1;
                 });
                 
-                const statsHtml = Object.entries(detectionCounts).map(([cls, count]) => 
+                const statsHtml = Object.entries(detectionCounts).map(([label, count]) => 
                     `<div class="stat-item">
                         <div class="stat-value">${count}</div>
-                        <div class="stat-label">${getClassIcon(cls)} ${cls}</div>
+                        <div class="stat-label">${getLabelIcon(label)} ${label}</div>
                     </div>`
                 ).join('');
                 
                 const detectionsHtml = video.detections.slice(0, 6).map(detection => 
                     `<div class="detection-item">
-                        <div class="detection-class">${getClassIcon(detection.class)} ${detection.class}</div>
-                        <div class="detection-confidence">${detection.confidence.toFixed(1)}%</div>
-                        <div class="detection-time">${detection.timestamp}s</div>
+                        <div class="detection-class">${getLabelIcon(detection.label)} ${detection.label}</div>
+                        <div class="detection-confidence">${(detection.confidence * 100).toFixed(1)}%</div>
+                        <div class="detection-time">${formatTimestamp(detection.timestamp)}</div>
                     </div>`
                 ).join('');
                 
@@ -352,7 +357,7 @@ HTML_TEMPLATE = """
                         <div class="video-header" onclick="toggleDetails('${video.video_id}')">
                             <div>
                                 <div class="video-title">📹 ${video.filename}</div>
-                                <div class="video-date">${formatDate(video.timestamp)}</div>
+                                <div class="video-date">${formatVideoDate(video.video_timestamp)}</div>
                             </div>
                             <div class="expand-icon">▼</div>
                         </div>
@@ -413,26 +418,26 @@ HTML_TEMPLATE = """
         
         function filterVideos() {
             const dateFilter = document.getElementById('dateFilter').value;
-            const classFilter = document.getElementById('classFilter').value;
+            const labelFilter = document.getElementById('classFilter').value;
             
             let filtered = allVideos;
             
             if (dateFilter) {
                 filtered = filtered.filter(video => 
-                    video.timestamp.startsWith(dateFilter)
+                    video.video_timestamp.startsWith(dateFilter)
                 );
             }
             
-            if (classFilter) {
+            if (labelFilter) {
                 filtered = filtered.filter(video => 
-                    video.detections.some(detection => detection.class === classFilter)
+                    video.detections.some(detection => detection.label === labelFilter)
                 );
             }
             
             displayVideos(filtered);
         }
         
-        function formatDate(timestamp) {
+        function formatVideoDate(timestamp) {
             const date = new Date(timestamp);
             return date.toLocaleString('es-ES', {
                 year: 'numeric',
@@ -443,7 +448,16 @@ HTML_TEMPLATE = """
             });
         }
         
-        function getClassIcon(className) {
+        function formatTimestamp(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString('es-ES', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+        
+        function getLabelIcon(labelName) {
             const icons = {
                 'car': '🚗',
                 'person': '👤',
@@ -452,9 +466,18 @@ HTML_TEMPLATE = """
                 'bicycle': '🚲',
                 'bus': '🚌',
                 'dog': '🐕',
-                'cat': '🐱'
+                'cat': '🐱',
+                'bear': '🐻',
+                'traffic light': '🚦',
+                'bird': '🐦',
+                'horse': '🐎',
+                'sheep': '🐑',
+                'cow': '🐄',
+                'elephant': '🐘',
+                'zebra': '🦓',
+                'giraffe': '🦒'
             };
-            return icons[className] || '📦';
+            return icons[labelName] || '📦';
         }
         
         // Cargar videos al inicio
@@ -476,18 +499,51 @@ def get_all_videos():
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
                 video_data = json.load(f)
-                
-            # Verificar que el archivo MP4 exista
-            video_full_path = os.path.join(RECORDINGS_PATH, video_data['video_path'])
+            
+            # Extraer el nombre del video
+            video_filename = video_data['video']  # e.g., detection_20250701_050808_HgkPAWHSL6.mp4
+
+            # Extraer año, mes y día desde el nombre del archivo
+            date_str = video_filename.split('_')[1]  # '20250701'
+            time_str = video_filename.split('_')[2]  # '050808'
+            
+            year = date_str[:4]
+            month = date_str[4:6]
+            day = date_str[6:8]
+            
+            hour = time_str[:2]
+            minute = time_str[2:4]
+            second = time_str[4:6]
+
+            # Construir la ruta relativa completa
+            relative_path = os.path.join(year, month, day, video_filename)
+            relative_path = relative_path.replace('\\', '/')
+            
+            video_data['video_path'] = relative_path
+            print(video_data['video_path'])
+            
+            # Verificar si el archivo existe
+            video_full_path = os.path.join(RECORDINGS_PATH, relative_path)
+
             if os.path.exists(video_full_path):
+                # Agregar campos adicionales para compatibilidad
+                video_data['filename'] = video_filename
+                video_data['video_id'] = video_filename.replace('.mp4', '').replace('.', '_')
+                
+                # Crear timestamp ISO 8601 para el video
+                video_data['video_timestamp'] = f"{year}-{month}-{day}T{hour}:{minute}:{second}"
+                
+                # Convertir detecciones al formato esperado por el frontend
+                # (el nuevo formato ya tiene 'label' y 'confidence' como decimal)
+                
                 videos.append(video_data)
                 
-        except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
+        except (json.JSONDecodeError, KeyError, FileNotFoundError, IndexError) as e:
             print(f"Error procesando {json_file}: {e}")
             continue
     
     # Ordenar por timestamp descendente (más recientes primero)
-    videos.sort(key=lambda x: x['timestamp'], reverse=True)
+    videos.sort(key=lambda x: x['video_timestamp'], reverse=True)
     return videos
 
 @app.route('/')
@@ -504,6 +560,7 @@ def api_videos():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# http://localhost:5000/video/2025%07%01detection_20250701_055356_5EQH5muk1v.mp4
 @app.route('/video/<path:video_path>')
 def serve_video(video_path):
     """Servir archivos de video"""
@@ -526,23 +583,23 @@ def api_stats():
         total_videos = len(videos)
         total_detections = sum(len(video['detections']) for video in videos)
         
-        # Contar detecciones por clase
-        class_counts = {}
+        # Contar detecciones por label (antes era 'class')
+        label_counts = {}
         for video in videos:
             for detection in video['detections']:
-                cls = detection['class']
-                class_counts[cls] = class_counts.get(cls, 0) + 1
+                label = detection['label']
+                label_counts[label] = label_counts.get(label, 0) + 1
         
         # Videos por día
         date_counts = {}
         for video in videos:
-            date_str = video['timestamp'][:10]  # YYYY-MM-DD
+            date_str = video['video_timestamp'][:10]  # YYYY-MM-DD
             date_counts[date_str] = date_counts.get(date_str, 0) + 1
         
         stats = {
             'total_videos': total_videos,
             'total_detections': total_detections,
-            'class_counts': class_counts,
+            'label_counts': label_counts,  # Cambiado de 'class_counts'
             'date_counts': date_counts
         }
         
