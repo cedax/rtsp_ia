@@ -28,7 +28,7 @@ last_detection_time = 0
 video_writer = None
 detection_log = []
 current_video_path = None
-conf_threshold = 0.5
+conf_threshold = 0.2
 
 # Buffer circular para pregrabación
 prebuffer_seconds = 5
@@ -69,7 +69,17 @@ def start_recording():
     filename = f"detection_{now.strftime('%Y%m%d_%H%M%S')}_{generate_uid()}.mp4"
     current_video_path = os.path.join(folder_path, filename)
 
-    video_writer = cv2.VideoWriter(current_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+    # Configuración optimizada para streaming web
+    # Usando H.264 con configuración web-friendly
+    fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec
+    video_writer = cv2.VideoWriter(current_video_path, fourcc, fps, (width, height))
+    
+    # Verificar si el writer se inicializó correctamente
+    if not video_writer.isOpened():
+        print("Error: No se pudo inicializar VideoWriter con avc1, probando con mp4v...")
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_writer = cv2.VideoWriter(current_video_path, fourcc, fps, (width, height))
+    
     print(f"Iniciando grabación: {current_video_path}")
 
     # Escribir frames del prebuffer
@@ -84,10 +94,53 @@ def stop_recording():
         print("Grabación detenida")
 
         if current_video_path:
+            # Post-procesamiento con FFmpeg para optimizar streaming
+            optimize_for_web(current_video_path)
+            
             json_path = os.path.splitext(current_video_path)[0] + ".json"
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump({"video": os.path.basename(current_video_path), "detections": detection_log}, f, indent=2)
             print(f"Detecciones guardadas en: {json_path}")
+
+def optimize_for_web(video_path):
+    """
+    Post-procesa el video para optimizarlo para streaming web
+    """
+    try:
+        # Crear nombre del archivo optimizado
+        base_name = os.path.splitext(video_path)[0]
+        optimized_path = f"{base_name}_web.mp4"
+        
+        # Comando FFmpeg para optimización web
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",  # -y para sobrescribir sin preguntar
+            "-i", video_path,
+            "-c:v", "libx264",           # Codec H.264
+            "-preset", "fast",           # Preset rápido para encoding
+            "-crf", "23",               # Calidad constante (18-28, menor = mejor calidad)
+            "-profile:v", "main",        # Perfil H.264 compatible
+            "-level", "3.1",            # Nivel H.264
+            "-pix_fmt", "yuv420p",      # Formato de pixel compatible
+            "-movflags", "+faststart",   # Optimización para streaming progresivo
+            "-maxrate", "2M",           # Bitrate máximo 2Mbps
+            "-bufsize", "4M",           # Tamaño del buffer
+            "-g", str(fps * 2),         # GOP size (keyframe cada 2 segundos)
+            "-sc_threshold", "0",        # Desactivar detección de cambio de escena
+            optimized_path
+        ]
+        
+        print(f"Optimizando video para web: {optimized_path}")
+        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print(f"Video optimizado guardado: {optimized_path}")
+            # Opcionalmente, eliminar el archivo original
+            # os.remove(video_path)
+        else:
+            print(f"Error al optimizar video: {result.stderr}")
+            
+    except Exception as e:
+        print(f"Error en optimización: {e}")
 
 # Iniciar hilo de detección y FFmpeg
 threading.Thread(target=yolo_worker, daemon=True).start()

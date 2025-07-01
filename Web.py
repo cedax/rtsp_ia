@@ -332,6 +332,8 @@ HTML_TEMPLATE = """
             }
             
             const html = videos.map(video => {
+                video.video_path = video.video_path.replace('.mp4', '_web.mp4');
+
                 const detectionCounts = {};
                 video.detections.forEach(detection => {
                     detectionCounts[detection.label] = (detectionCounts[detection.label] || 0) + 1;
@@ -520,8 +522,7 @@ def get_all_videos():
             relative_path = relative_path.replace('\\', '/')
             
             video_data['video_path'] = relative_path
-            print(video_data['video_path'])
-            
+
             # Verificar si el archivo existe
             video_full_path = os.path.join(RECORDINGS_PATH, relative_path)
 
