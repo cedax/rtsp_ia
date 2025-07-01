@@ -28,7 +28,7 @@ last_detection_time = 0
 video_writer = None
 detection_log = []
 current_video_path = None
-conf_threshold = 0.2
+conf_threshold = 0.55
 
 # Buffer circular para pregrabación
 prebuffer_seconds = 5

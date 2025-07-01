@@ -620,7 +620,9 @@ HTML_TEMPLATE = """
             noResults.style.display = 'none';
             
             const html = videos.map(video => {
-                video.video_path = video.video_path.replace('.mp4', '_web.mp4');
+                if (!video.video_path.endsWith('_web.mp4')) {
+                    video.video_path = video.video_path.replace('.mp4', '_web.mp4');
+                }
 
                 const detectionCounts = {};
                 video.detections.forEach(detection => {
