@@ -4,6 +4,7 @@ import json
 from datetime import datetime, date
 import glob
 from pathlib import Path
+import subprocess
 
 app = Flask(__name__)
 
@@ -11,14 +12,14 @@ app = Flask(__name__)
 BASE_PATH = "C:/Users/chlopez/Desktop/CamaraSeguridad"
 RECORDINGS_PATH = os.path.join(BASE_PATH, "recordings")
 
-# Template HTML con diseño iOS
+# Template HTML con diseño minimalista
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>📹 Video Surveillance</title>
+    <title>Video Surveillance</title>
     <style>
         * {
             margin: 0;
@@ -27,76 +28,137 @@ HTML_TEMPLATE = """
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f2f2f7;
-            color: #000;
-            line-height: 1.4;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #ffffff;
+            color: #1a1a1a;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 20px;
         }
         
         .header {
-            background: #fff;
-            border-bottom: 1px solid #e5e5ea;
-            padding: 20px;
-            text-align: center;
+            border-bottom: 1px solid #e5e5e5;
+            padding: 30px 0;
+            background: #ffffff;
             position: sticky;
             top: 0;
             z-index: 100;
+            backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.95);
         }
         
-        .header h1 {
-            font-size: 28px;
-            font-weight: 700;
-            margin-bottom: 10px;
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .logo h1 {
+            font-size: 24px;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+        
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: #1a1a1a;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 16px;
+        }
+        
+        .stats-summary {
+            display: flex;
+            gap: 24px;
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .stat-item {
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 20px;
+            font-weight: 600;
+            color: #1a1a1a;
+            display: block;
         }
         
         .filters {
-            background: #fff;
-            margin: 20px;
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            background: #fafafa;
+            border: 1px solid #e5e5e5;
+            border-radius: 8px;
+            margin: 24px 0;
+            padding: 24px;
+        }
+        
+        .filters-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: 16px;
+            align-items: end;
         }
         
         .filter-group {
-            margin-bottom: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
         }
         
-        .filter-group label {
-            display: block;
-            font-weight: 600;
-            margin-bottom: 8px;
-            color: #333;
+        .filter-label {
+            font-size: 12px;
+            font-weight: 500;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
         
         .filter-input {
-            width: 100%;
             padding: 12px 16px;
-            border: 1px solid #d1d1d6;
-            border-radius: 8px;
-            font-size: 16px;
-            background: #fff;
+            border: 1px solid #d1d1d1;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #ffffff;
+            transition: all 0.2s ease;
         }
         
         .filter-input:focus {
             outline: none;
-            border-color: #007aff;
-            box-shadow: 0 0 0 3px rgba(0,122,255,0.1);
+            border-color: #1a1a1a;
+            box-shadow: 0 0 0 3px rgba(26, 26, 26, 0.1);
         }
         
         .btn {
-            background: #007aff;
+            background: #1a1a1a;
             color: white;
             border: none;
             padding: 12px 24px;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.2s ease;
+            height: fit-content;
         }
         
         .btn:hover {
-            background: #005ecb;
+            background: #333;
             transform: translateY(-1px);
         }
         
@@ -104,164 +166,345 @@ HTML_TEMPLATE = """
             transform: translateY(0);
         }
         
-        .videos-container {
-            margin: 20px;
+        .btn-secondary {
+            background: transparent;
+            color: #1a1a1a;
+            border: 1px solid #d1d1d1;
+        }
+        
+        .btn-secondary:hover {
+            background: #f5f5f5;
+            border-color: #1a1a1a;
+        }
+        
+        .videos-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 24px;
+            margin: 24px 0;
         }
         
         .video-card {
-            background: #fff;
+            background: #ffffff;
+            border: 1px solid #e5e5e5;
             border-radius: 12px;
-            margin-bottom: 16px;
             overflow: hidden;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            transition: all 0.2s;
+            transition: all 0.3s ease;
+            position: relative;
         }
         
         .video-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            transform: translateY(-4px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+            border-color: #d1d1d1;
+        }
+        
+        .video-thumbnail {
+            aspect-ratio: 16/9;
+            background: #f5f5f5;
+            position: relative;
+            overflow: hidden;
+            cursor: pointer;
+        }
+        
+        .video-preview {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 0;
+        }
+        
+        .video-placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #f5f5f5 0%, #e5e5e5 100%);
+            color: #999;
+            font-size: 48px;
+        }
+        
+        .video-duration {
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .play-button {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 60px;
+            height: 60px;
+            background: rgba(0, 0, 0, 0.8);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            z-index: 2;
+        }
+        
+        .video-thumbnail:hover .play-button {
+            background: rgba(0, 0, 0, 0.9);
+            transform: translate(-50%, -50%) scale(1.1);
+        }
+        
+        .video-controls {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+            padding: 20px 16px 16px 16px;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+        
+        .video-thumbnail:hover .video-controls {
+            opacity: 1;
+        }
+        
+        .video-info {
+            padding: 20px;
         }
         
         .video-header {
-            padding: 16px 20px;
-            border-bottom: 1px solid #f2f2f7;
-            cursor: pointer;
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            align-items: flex-start;
+            margin-bottom: 12px;
         }
         
         .video-title {
+            font-size: 16px;
             font-weight: 600;
-            font-size: 18px;
+            color: #1a1a1a;
+            line-height: 1.3;
         }
         
         .video-date {
-            color: #8e8e93;
-            font-size: 14px;
+            font-size: 12px;
+            color: #666;
+            text-align: right;
+            line-height: 1.3;
         }
         
-        .expand-icon {
-            font-size: 20px;
-            color: #8e8e93;
-            transition: transform 0.2s;
-        }
-        
-        .video-details {
-            display: none;
-            padding: 20px;
-            background: #f9f9f9;
-        }
-        
-        .video-details.expanded {
-            display: block;
-        }
-        
-        .video-details.expanded ~ .video-header .expand-icon {
-            transform: rotate(180deg);
-        }
-        
-        .detections-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 12px;
+        .detection-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
             margin: 16px 0;
         }
         
-        .detection-item {
-            background: #fff;
-            padding: 12px;
-            border-radius: 8px;
+        .detection-tag {
+            background: #f5f5f5;
+            border: 1px solid #e5e5e5;
+            padding: 4px 8px;
+            border-radius: 16px;
+            font-size: 11px;
+            font-weight: 500;
+            color: #666;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .detection-count {
+            background: #1a1a1a;
+            color: white;
+            border-radius: 10px;
+            padding: 2px 6px;
+            font-size: 10px;
+            min-width: 16px;
             text-align: center;
-            border: 1px solid #e5e5ea;
         }
         
-        .detection-class {
-            font-weight: 600;
-            margin-bottom: 4px;
+        .video-details {
+            border-top: 1px solid #f0f0f0;
+            padding-top: 16px;
+            margin-top: 16px;
         }
         
-        .detection-confidence {
-            color: #8e8e93;
+        .details-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        
+        .detail-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             font-size: 12px;
         }
         
-        .detection-time {
-            color: #007aff;
-            font-size: 11px;
-            margin-top: 4px;
+        .detail-label {
+            color: #666;
+            font-weight: 500;
+        }
+        
+        .detail-value {
+            color: #1a1a1a;
+            font-weight: 600;
         }
         
         .video-actions {
             display: flex;
-            gap: 12px;
+            gap: 8px;
             margin-top: 16px;
         }
         
-        .btn-secondary {
-            background: #8e8e93;
-            color: white;
+        .btn-small {
+            padding: 8px 16px;
+            font-size: 12px;
             flex: 1;
         }
         
-        .btn-secondary:hover {
-            background: #636366;
+        .hidden {
+            display: none;
+        }
+        
+        .video-player-container {
+            margin-top: 16px;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #f5f5f5;
         }
         
         .video-player {
             width: 100%;
             max-width: 100%;
-            border-radius: 8px;
-            margin-bottom: 16px;
+            display: block;
         }
         
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            gap: 12px;
-            margin-bottom: 16px;
+        .recent-detections {
+            margin-top: 16px;
         }
         
-        .stat-item {
-            background: #fff;
-            padding: 12px;
-            border-radius: 8px;
-            text-align: center;
-            border: 1px solid #e5e5ea;
-        }
-        
-        .stat-value {
-            font-size: 20px;
-            font-weight: 700;
-            color: #007aff;
-        }
-        
-        .stat-label {
+        .recent-detections h4 {
             font-size: 12px;
-            color: #8e8e93;
-            margin-top: 4px;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .detections-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        
+        .detection-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: #fafafa;
+            border-radius: 6px;
+            font-size: 11px;
+        }
+        
+        .detection-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .detection-class {
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+        
+        .detection-confidence {
+            color: #666;
+        }
+        
+        .detection-time {
+            color: #999;
+            font-size: 10px;
         }
         
         .loading {
             text-align: center;
-            padding: 40px;
-            color: #8e8e93;
+            padding: 60px 20px;
+            color: #666;
         }
         
         .no-results {
             text-align: center;
-            padding: 40px;
-            color: #8e8e93;
+            padding: 60px 20px;
+            color: #666;
+        }
+        
+        .no-results-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+        
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #1a1a1a;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
         
         @media (max-width: 768px) {
-            .header, .filters, .videos-container {
-                margin: 10px;
+            .container {
+                padding: 0 16px;
+            }
+            
+            .header-content {
+                flex-direction: column;
+                gap: 16px;
+                text-align: center;
+            }
+            
+            .stats-summary {
+                justify-content: center;
+            }
+            
+            .filters-grid {
+                grid-template-columns: 1fr;
+                gap: 16px;
+            }
+            
+            .videos-grid {
+                grid-template-columns: 1fr;
+                gap: 16px;
             }
             
             .video-header {
                 flex-direction: column;
                 align-items: flex-start;
+                gap: 8px;
+            }
+            
+            .details-grid {
+                grid-template-columns: 1fr;
                 gap: 8px;
             }
             
@@ -273,39 +516,70 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="header">
-        <h1>📹 Video Surveillance</h1>
-        <p>Sistema de monitoreo con IA</p>
+        <div class="container">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="logo-icon">📹</div>
+                    <h1>Video Surveillance</h1>
+                </div>
+                <div class="stats-summary">
+                    <div class="stat-item">
+                        <span class="stat-number" id="total-videos">0</span>
+                        <span>Videos</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-number" id="total-detections">0</span>
+                        <span>Detecciones</span>
+                    </div>
+                    <!--
+                    <div class="stat-item">
+                        <span class="stat-number" id="active-cameras">1</span>
+                        <span>Cámaras</span>
+                    </div>
+                    -->
+                </div>
+            </div>
+        </div>
     </div>
     
-    <div class="filters">
-        <div class="filter-group">
-            <label for="dateFilter">📅 Filtrar por fecha:</label>
-            <input type="date" id="dateFilter" class="filter-input">
+    <div class="container">
+        <div class="filters">
+            <div class="filters-grid">
+                <div class="filter-group">
+                    <label class="filter-label" for="dateFilter">Fecha</label>
+                    <input type="date" id="dateFilter" class="filter-input">
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label" for="classFilter">Detección</label>
+                    <select id="classFilter" class="filter-input">
+                        <option value="">Todas</option>
+                        <option value="person">Persona</option>
+                        <option value="car">Automóvil</option>
+                        <option value="truck">Camión</option>
+                        <option value="motorcycle">Motocicleta</option>
+                        <option value="bicycle">Bicicleta</option>
+                        <option value="dog">Perro</option>
+                        <option value="cat">Gato</option>
+                        <option value="bird">Pájaro</option>
+                        <option value="bear">Oso</option>
+                        <option value="traffic light">Semáforo</option>
+                    </select>
+                </div>
+                <button class="btn" onclick="filterVideos()">Filtrar</button>
+            </div>
         </div>
-        <div class="filter-group">
-            <label for="classFilter">🔍 Filtrar por detección:</label>
-            <select id="classFilter" class="filter-input">
-                <option value="">Todas las detecciones</option>
-                <option value="car">🚗 Automóvil</option>
-                <option value="person">👤 Persona</option>
-                <option value="truck">🚛 Camión</option>
-                <option value="motorcycle">🏍️ Motocicleta</option>
-                <option value="bicycle">🚲 Bicicleta</option>
-                <option value="bear">🐻 Oso</option>
-                <option value="traffic light">🚦 Semáforo</option>
-                <option value="dog">🐕 Perro</option>
-                <option value="cat">🐱 Gato</option>
-                <option value="bird">🐦 Pájaro</option>
-            </select>
-        </div>
-        <button class="btn" onclick="filterVideos()">Filtrar</button>
-    </div>
-    
-    <div class="videos-container">
+        
         <div id="loading" class="loading">
-            <p>⏳ Cargando videos...</p>
+            <div class="spinner"></div>
+            <p>Cargando videos...</p>
         </div>
-        <div id="videos-list"></div>
+        
+        <div id="videos-grid" class="videos-grid"></div>
+        
+        <div id="no-results" class="no-results" style="display: none;">
+            <div class="no-results-icon">🔍</div>
+            <p>No se encontraron videos con los filtros seleccionados</p>
+        </div>
     </div>
 
     <script>
@@ -316,20 +590,34 @@ HTML_TEMPLATE = """
                 const response = await fetch('/api/videos');
                 allVideos = await response.json();
                 displayVideos(allVideos);
+                updateStats();
                 document.getElementById('loading').style.display = 'none';
             } catch (error) {
                 console.error('Error loading videos:', error);
-                document.getElementById('loading').innerHTML = '<p>❌ Error cargando videos</p>';
+                document.getElementById('loading').innerHTML = '<p>Error cargando videos</p>';
             }
         }
         
+        function updateStats() {
+            const totalVideos = allVideos.length;
+            const totalDetections = allVideos.reduce((sum, video) => sum + video.detections.length, 0);
+            
+            document.getElementById('total-videos').textContent = totalVideos;
+            document.getElementById('total-detections').textContent = totalDetections;
+        }
+        
         function displayVideos(videos) {
-            const container = document.getElementById('videos-list');
+            const container = document.getElementById('videos-grid');
+            const noResults = document.getElementById('no-results');
             
             if (videos.length === 0) {
-                container.innerHTML = '<div class="no-results"><p>📭 No se encontraron videos</p></div>';
+                container.style.display = 'none';
+                noResults.style.display = 'block';
                 return;
             }
+            
+            container.style.display = 'grid';
+            noResults.style.display = 'none';
             
             const html = videos.map(video => {
                 video.video_path = video.video_path.replace('.mp4', '_web.mp4');
@@ -339,50 +627,87 @@ HTML_TEMPLATE = """
                     detectionCounts[detection.label] = (detectionCounts[detection.label] || 0) + 1;
                 });
                 
-                const statsHtml = Object.entries(detectionCounts).map(([label, count]) => 
-                    `<div class="stat-item">
-                        <div class="stat-value">${count}</div>
-                        <div class="stat-label">${getLabelIcon(label)} ${label}</div>
+                const detectionTags = Object.entries(detectionCounts).slice(0, 5).map(([label, count]) => 
+                    `<div class="detection-tag">
+                        ${getLabelIcon(label)} ${label}
+                        <span class="detection-count">${count}</span>
                     </div>`
                 ).join('');
                 
-                const detectionsHtml = video.detections.slice(0, 6).map(detection => 
+                const recentDetections = video.detections.slice(0, 3).map(detection => 
                     `<div class="detection-item">
-                        <div class="detection-class">${getLabelIcon(detection.label)} ${detection.label}</div>
-                        <div class="detection-confidence">${(detection.confidence * 100).toFixed(1)}%</div>
-                        <div class="detection-time">${formatTimestamp(detection.timestamp)}</div>
+                        <div class="detection-info">
+                            <span class="detection-class">${getLabelIcon(detection.label)} ${detection.label}</span>
+                            <span class="detection-confidence">${(detection.confidence * 100).toFixed(0)}%</span>
+                        </div>
+                        <div class="detection-time">${formatTime(detection.timestamp)}</div>
                     </div>`
                 ).join('');
+                
+                const fileSize = video.file_size || '2.1 MB';
+                const duration = video.duration || '30s';
+                const resolution = video.resolution || 'SD';
                 
                 return `
                     <div class="video-card">
-                        <div class="video-header" onclick="toggleDetails('${video.video_id}')">
-                            <div>
-                                <div class="video-title">📹 ${video.filename}</div>
-                                <div class="video-date">${formatVideoDate(video.video_timestamp)}</div>
+                        <div class="video-thumbnail" onclick="toggleVideoPlayback('${video.video_path}', '${video.video_id}')">
+                            <div id="placeholder-${video.video_id}" class="video-placeholder">📹</div>
+                            <video id="video-${video.video_id}" class="video-preview hidden" controls>
+                                <source src="/video/${video.video_path}" type="video/mp4">
+                            </video>
+                            <div id="play-btn-${video.video_id}" class="play-button">▶</div>
+                            <div class="video-controls">
+                                <div class="video-duration">${duration}</div>
                             </div>
-                            <div class="expand-icon">▼</div>
                         </div>
-                        <div id="details-${video.video_id}" class="video-details">
-                            <div class="stats">
-                                ${statsHtml}
+                        
+                        <div class="video-info">
+                            <div class="video-header">
+                                <div class="video-title">${video.filename.replace('.mp4', '')}</div>
+                                <div class="video-date">
+                                    ${formatDate(video.video_timestamp)}<br>
+                                    ${formatTime(video.video_timestamp)}
+                                </div>
                             </div>
                             
-                            <h4>🎯 Detecciones recientes:</h4>
-                            <div class="detections-grid">
-                                ${detectionsHtml}
+                            <div class="detection-summary">
+                                ${detectionTags}
                             </div>
                             
-                            <div class="video-actions">
-                                <button class="btn" onclick="playVideo('${video.video_path}', '${video.video_id}')">
-                                    ▶️ Reproducir Video
-                                </button>
-                                <button class="btn btn-secondary" onclick="downloadVideo('${video.video_path}')">
-                                    ⬇️ Descargar
-                                </button>
+                            <div class="video-details">
+                                <div class="details-grid">
+                                    <div class="detail-item">
+                                        <span class="detail-label">Detecciones</span>
+                                        <span class="detail-value">${video.detections.length}</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Tamaño</span>
+                                        <span class="detail-value">${fileSize}</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Duración</span>
+                                        <span class="detail-value">${duration}</span>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="detail-label">Resolución</span>
+                                        <span class="detail-value">${resolution}</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="recent-detections">
+                                    <h4>Detecciones Recientes</h4>
+                                    <div class="detections-list">
+                                        ${recentDetections}
+                                    </div>
+                                </div>
+                                
+                                <div class="video-actions">
+                                    <button class="btn-secondary btn-small" onclick="downloadVideo('${video.video_path}')">
+                                        Descargar
+                                    </button>
+                                </div>
+                                
                             </div>
-                            
-                            <div id="player-${video.video_id}"></div>
                         </div>
                     </div>
                 `;
@@ -391,27 +716,28 @@ HTML_TEMPLATE = """
             container.innerHTML = html;
         }
         
-        function toggleDetails(videoId) {
-            const details = document.getElementById(`details-${videoId}`);
-            const icon = details.previousElementSibling.querySelector('.expand-icon');
+        function toggleVideoPlayback(videoPath, videoId) {
+            const placeholder = document.getElementById(`placeholder-${videoId}`);
+            const video = document.getElementById(`video-${videoId}`);
+            const playBtn = document.getElementById(`play-btn-${videoId}`);
             
-            if (details.classList.contains('expanded')) {
-                details.classList.remove('expanded');
-                icon.style.transform = 'rotate(0deg)';
+            if (video.classList.contains('hidden')) {
+                // Mostrar video y ocultar placeholder
+                placeholder.classList.add('hidden');
+                video.classList.remove('hidden');
+                playBtn.classList.add('hidden');
+                video.play();
             } else {
-                details.classList.add('expanded');
-                icon.style.transform = 'rotate(180deg)';
+                // Ocultar video y mostrar placeholder
+                video.pause();
+                video.classList.add('hidden');
+                placeholder.classList.remove('hidden');
+                playBtn.classList.remove('hidden');
             }
         }
         
         function playVideo(videoPath, videoId) {
-            const playerContainer = document.getElementById(`player-${videoId}`);
-            playerContainer.innerHTML = `
-                <video class="video-player" controls>
-                    <source src="/video/${videoPath}" type="video/mp4">
-                    Tu navegador no soporta el elemento video.
-                </video>
-            `;
+            toggleVideoPlayback(videoPath, videoId);
         }
         
         function downloadVideo(videoPath) {
@@ -439,23 +765,20 @@ HTML_TEMPLATE = """
             displayVideos(filtered);
         }
         
-        function formatVideoDate(timestamp) {
+        function formatDate(timestamp) {
             const date = new Date(timestamp);
-            return date.toLocaleString('es-ES', {
-                year: 'numeric',
-                month: 'short',
+            return date.toLocaleDateString('es-ES', {
                 day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
+                month: 'short',
+                year: 'numeric'
             });
         }
         
-        function formatTimestamp(timestamp) {
+        function formatTime(timestamp) {
             const date = new Date(timestamp);
             return date.toLocaleTimeString('es-ES', {
                 hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
+                minute: '2-digit'
             });
         }
         
@@ -474,21 +797,103 @@ HTML_TEMPLATE = """
                 'bird': '🐦',
                 'horse': '🐎',
                 'sheep': '🐑',
-                'cow': '🐄',
-                'elephant': '🐘',
-                'zebra': '🦓',
-                'giraffe': '🦒'
+                'cow': '🐄'
             };
             return icons[labelName] || '📦';
         }
         
         // Cargar videos al inicio
         loadVideos();
+        
+        // Auto-refresh cada 30 segundos
+        setInterval(loadVideos, 30000);
     </script>
 </body>
 </html>
 """
 
+def get_video_info(video_path):
+    """Obtiene información del video usando ffprobe"""
+
+    if not video_path.endswith('_web.mp4'):
+        video_path = video_path.replace('.mp4', '_web.mp4')
+
+    try:
+        # Comando ffprobe para obtener información del video
+        cmd = [
+            'ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams',
+            video_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode == 0:
+            info = json.loads(result.stdout)
+            
+            # Obtener duración
+            duration = float(info['format']['duration'])
+            duration_str = format_duration(duration)
+            
+            # Obtener tamaño del archivo
+            size = int(info['format']['size'])
+            size_str = format_file_size(size)
+            
+            # Obtener resolución del video
+            video_stream = next((s for s in info['streams'] if s['codec_type'] == 'video'), None)
+            resolution = 'SD'
+            if video_stream:
+                width = int(video_stream.get('width', 0))
+                height = int(video_stream.get('height', 0))
+                if height >= 1080:
+                    resolution = 'FHD'
+                elif height >= 720:
+                    resolution = 'HD'
+                elif height >= 480:
+                    resolution = 'SD'
+            
+            return {
+                'duration': duration_str,
+                'size': size_str,
+                'resolution': resolution
+            }
+    except Exception as e:
+        print(f"Error obteniendo info del video {video_path}: {e}")
+    
+    # Valores por defecto si no se puede obtener la información
+    try:
+        # Al menos obtener el tamaño del archivo
+        size = os.path.getsize(video_path)
+        size_str = format_file_size(size)
+        return {
+            'duration': '00:30',
+            'size': size_str,
+            'resolution': 'SD'
+        }
+    except:
+        return {
+            'duration': '00:30',
+            'size': '2.1 MB',
+            'resolution': 'SD'
+        }
+
+def format_duration(seconds):
+    """Convierte segundos a formato MM:SS o HH:MM:SS"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    seconds = int(seconds % 60)
+    
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    else:
+        return f"{minutes:02d}:{seconds:02d}"
+
+def format_file_size(bytes):
+    """Convierte bytes a formato legible"""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if bytes < 1024.0:
+            return f"{bytes:.1f} {unit}"
+        bytes /= 1024.0
+    return f"{bytes:.1f} TB"
 def get_all_videos():
     """Obtiene todos los videos y sus metadatos JSON"""
     videos = []
@@ -527,6 +932,9 @@ def get_all_videos():
             video_full_path = os.path.join(RECORDINGS_PATH, relative_path)
 
             if os.path.exists(video_full_path):
+                # Obtener información real del video
+                video_info = get_video_info(video_full_path)
+                
                 # Agregar campos adicionales para compatibilidad
                 video_data['filename'] = video_filename
                 video_data['video_id'] = video_filename.replace('.mp4', '').replace('.', '_')
@@ -534,8 +942,10 @@ def get_all_videos():
                 # Crear timestamp ISO 8601 para el video
                 video_data['video_timestamp'] = f"{year}-{month}-{day}T{hour}:{minute}:{second}"
                 
-                # Convertir detecciones al formato esperado por el frontend
-                # (el nuevo formato ya tiene 'label' y 'confidence' como decimal)
+                # Agregar información del video
+                video_data['duration'] = video_info['duration']
+                video_data['file_size'] = video_info['size']
+                video_data['resolution'] = video_info['resolution']
                 
                 videos.append(video_data)
                 
@@ -561,7 +971,6 @@ def api_videos():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# http://localhost:5000/video/2025%07%01detection_20250701_055356_5EQH5muk1v.mp4
 @app.route('/video/<path:video_path>')
 def serve_video(video_path):
     """Servir archivos de video"""
@@ -584,7 +993,7 @@ def api_stats():
         total_videos = len(videos)
         total_detections = sum(len(video['detections']) for video in videos)
         
-        # Contar detecciones por label (antes era 'class')
+        # Contar detecciones por label
         label_counts = {}
         for video in videos:
             for detection in video['detections']:
@@ -600,7 +1009,7 @@ def api_stats():
         stats = {
             'total_videos': total_videos,
             'total_detections': total_detections,
-            'label_counts': label_counts,  # Cambiado de 'class_counts'
+            'label_counts': label_counts,
             'date_counts': date_counts
         }
         
