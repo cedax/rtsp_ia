@@ -9,7 +9,7 @@ import subprocess
 app = Flask(__name__)
 
 # Configuración de rutas
-BASE_PATH = "C:/Users/chlopez/Desktop/CamaraSeguridad"
+BASE_PATH = "/home/sedax/rtsp_ia"
 RECORDINGS_PATH = os.path.join(BASE_PATH, "recordings")
 
 # Template HTML con diseño minimalista
