@@ -1,16 +1,285 @@
-from flask import Flask, render_template_string, jsonify, request, send_file
 import os
 import json
-from datetime import datetime, date
 import glob
 from pathlib import Path
 import subprocess
+from flask import Flask, render_template_string, jsonify, request, send_file, session, redirect, url_for, flash
+import hashlib
+import secrets
+from datetime import datetime, date, timedelta
+from functools import wraps
 
 app = Flask(__name__)
 
 # Configuración de rutas
 BASE_PATH = "/home/sedax/rtsp_ia"
 RECORDINGS_PATH = os.path.join(BASE_PATH, "recordings")
+
+# Configuración de seguridad
+app.secret_key = secrets.token_hex(32)  # Genera una clave secreta aleatoria
+app.permanent_session_lifetime = timedelta(hours=8)  # Sesión expira en 8 horas
+
+# Credenciales hardcodeadas (hasheadas)
+USERS = {
+    'admin': hashlib.sha256('password123'.encode()).hexdigest(),  # Cambiar esta contraseña
+}
+
+def hash_password(password):
+    """Hashea una contraseña con SHA-256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(username, password):
+    """Verifica las credenciales del usuario"""
+    if username in USERS:
+        return USERS[username] == hash_password(password)
+    return False
+
+def login_required(f):
+    """Decorador para proteger rutas"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'logged_in' not in session or not session['logged_in']:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def rate_limit_check():
+    """Protección básica contra ataques de fuerza bruta"""
+    client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
+    current_time = datetime.now()
+    
+    if 'login_attempts' not in session:
+        session['login_attempts'] = {}
+    
+    # Limpiar intentos antiguos (más de 15 minutos)
+    session['login_attempts'] = {
+        ip: attempts for ip, attempts in session['login_attempts'].items()
+        if current_time - attempts['last_attempt'] < timedelta(minutes=15)
+    }
+    
+    if client_ip in session['login_attempts']:
+        attempts = session['login_attempts'][client_ip]
+        if attempts['count'] >= 5:  # Máximo 5 intentos
+            if current_time - attempts['last_attempt'] < timedelta(minutes=15):
+                return False
+    
+    return True
+
+def record_failed_attempt():
+    """Registra un intento fallido de login"""
+    client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
+    current_time = datetime.now()
+    
+    if 'login_attempts' not in session:
+        session['login_attempts'] = {}
+    
+    if client_ip not in session['login_attempts']:
+        session['login_attempts'][client_ip] = {'count': 0, 'last_attempt': current_time}
+    
+    session['login_attempts'][client_ip]['count'] += 1
+    session['login_attempts'][client_ip]['last_attempt'] = current_time
+
+# ================================
+# PLANTILLA HTML PARA LOGIN
+# ================================
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Surveillance - Login</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #f0f0f0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .login-container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            width: 100%;
+            max-width: 400px;
+        }
+        
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .logo {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+        
+        .login-title {
+            font-size: 24px;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin-bottom: 8px;
+        }
+        
+        .login-subtitle {
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 500;
+            color: #333;
+            font-size: 14px;
+        }
+        
+        .form-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 16px;
+            transition: border-color 0.2s;
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .login-btn {
+            width: 100%;
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .login-btn:hover {
+            background: #5a67d8;
+        }
+        
+        .login-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .alert {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        
+        .alert-error {
+            background: #fee;
+            color: #c53030;
+            border: 1px solid #fecaca;
+        }
+        
+        .alert-warning {
+            background: #fffbeb;
+            color: #d69e2e;
+            border: 1px solid #fbd38d;
+        }
+        
+        .security-info {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            text-align: center;
+        }
+        
+        .security-info p {
+            font-size: 12px;
+            color: #666;
+            line-height: 1.4;
+        }
+        
+        .attempts-remaining {
+            font-size: 12px;
+            color: #d69e2e;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <div class="logo">🔐</div>
+            <h1 class="login-title">Video Surveillance</h1>
+            <p class="login-subtitle">Acceso al sistema de vigilancia</p>
+        </div>
+        
+        {% if error %}
+        <div class="alert alert-error">
+            {{ error }}
+        </div>
+        {% endif %}
+        
+        {% if warning %}
+        <div class="alert alert-warning">
+            {{ warning }}
+        </div>
+        {% endif %}
+        
+        <form method="POST">
+            <div class="form-group">
+                <label for="username" class="form-label">Usuario</label>
+                <input type="text" id="username" name="username" class="form-input" 
+                       required autocomplete="username" value="{{ username or '' }}">
+            </div>
+            
+            <div class="form-group">
+                <label for="password" class="form-label">Contraseña</label>
+                <input type="password" id="password" name="password" class="form-input" 
+                       required autocomplete="current-password">
+            </div>
+            
+            <button type="submit" class="login-btn" {{ 'disabled' if blocked else '' }}>
+                {% if blocked %}
+                Bloqueado temporalmente
+                {% else %}
+                Iniciar Sesión
+                {% endif %}
+            </button>
+            
+            {% if attempts_count %}
+            <div class="attempts-remaining">
+                Intentos restantes: {{ 5 - attempts_count }}
+            </div>
+            {% endif %}
+        </form>
+        
+        <div class="security-info">
+            <p>🔒 Conexión segura protegida con autenticación</p>
+            <p>Máximo 5 intentos cada 15 minutos</p>
+        </div>
+    </div>
+</body>
+</html>
+"""
 
 # Template HTML con diseño minimalista
 HTML_TEMPLATE = """
@@ -522,6 +791,18 @@ HTML_TEMPLATE = """
                     <div class="logo-icon">📹</div>
                     <h1>Video Surveillance</h1>
                 </div>
+
+                <div class="user-info">
+                    <span style="margin-right: 16px; color: #666; font-size: 12px;">
+                        👤 {{ session.username }}
+                    </span>
+                    <a href="/logout" style="color: #666; text-decoration: none; font-size: 12px; 
+                       padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; 
+                       transition: all 0.2s;">
+                        Cerrar Sesión
+                    </a>
+                </div>
+
                 <div class="stats-summary">
                     <div class="stat-item">
                         <span class="stat-number" id="total-videos">0</span>
@@ -959,14 +1240,87 @@ def get_all_videos():
     videos.sort(key=lambda x: x['video_timestamp'], reverse=True)
     return videos
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Página y procesamiento de login"""
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        
+        # Verificar rate limiting
+        if not rate_limit_check():
+            return render_template_string(LOGIN_TEMPLATE, 
+                                        error="Demasiados intentos fallidos. Espera 15 minutos.",
+                                        blocked=True)
+        
+        # Verificar credenciales
+        if username and password and verify_password(username, password):
+            session['logged_in'] = True
+            session['username'] = username
+            session['login_time'] = datetime.now().isoformat()
+            session.permanent = True
+            
+            # Limpiar intentos fallidos
+            if 'login_attempts' in session:
+                client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
+                session['login_attempts'].pop(client_ip, None)
+            
+            return redirect(url_for('index'))
+        else:
+            record_failed_attempt()
+            
+            # Calcular intentos restantes
+            client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
+            attempts_count = 0
+            if 'login_attempts' in session and client_ip in session['login_attempts']:
+                attempts_count = session['login_attempts'][client_ip]['count']
+            
+            error_msg = "Usuario o contraseña incorrectos"
+            if attempts_count >= 4:
+                error_msg += " - Un intento más y serás bloqueado"
+            
+            return render_template_string(LOGIN_TEMPLATE, 
+                                        error=error_msg,
+                                        username=username,
+                                        attempts_count=attempts_count)
+    
+    # GET request - mostrar formulario
+    # Verificar si ya está logueado
+    if 'logged_in' in session and session['logged_in']:
+        return redirect(url_for('index'))
+    
+    # Verificar si está bloqueado
+    blocked = not rate_limit_check()
+    warning = None
+    
+    client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
+    attempts_count = 0
+    if 'login_attempts' in session and client_ip in session['login_attempts']:
+        attempts_count = session['login_attempts'][client_ip]['count']
+        if attempts_count > 0:
+            warning = f"Has realizado {attempts_count} intentos fallidos"
+    
+    return render_template_string(LOGIN_TEMPLATE, 
+                                blocked=blocked, 
+                                warning=warning,
+                                attempts_count=attempts_count)
+
+@app.route('/logout')
+def logout():
+    """Cerrar sesión"""
+    session.clear()
+    return redirect(url_for('login'))
+
 @app.route('/')
+@login_required
 def index():
-    """Página principal"""
+    """Página principal - PROTEGIDA"""
     return render_template_string(HTML_TEMPLATE)
 
 @app.route('/api/videos')
+@login_required
 def api_videos():
-    """API para obtener lista de videos"""
+    """API para obtener lista de videos - PROTEGIDA"""
     try:
         videos = get_all_videos()
         return jsonify(videos)
@@ -974,8 +1328,9 @@ def api_videos():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/video/<path:video_path>')
+@login_required
 def serve_video(video_path):
-    """Servir archivos de video"""
+    """Servir archivos de video - PROTEGIDO"""
     try:
         full_path = os.path.join(RECORDINGS_PATH, video_path)
         
@@ -987,8 +1342,9 @@ def serve_video(video_path):
         return f"Error sirviendo video: {str(e)}", 500
 
 @app.route('/api/stats')
+@login_required
 def api_stats():
-    """API para obtener estadísticas"""
+    """API para obtener estadísticas - PROTEGIDA"""
     try:
         videos = get_all_videos()
         
