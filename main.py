@@ -9,6 +9,8 @@ import json
 import os
 import secrets
 import string
+import math
+import tkinter as tk
 from ultralytics import YOLO
 from collections import deque
 from dotenv import load_dotenv
@@ -16,11 +18,80 @@ from dotenv import load_dotenv
 # Cargar variables de entorno
 load_dotenv()
 
+class WindowManager:
+    def __init__(self):
+        self.screen_width, self.screen_height = self.get_screen_size()
+        self.window_positions = {}
+        self.window_size = None
+        
+    def get_screen_size(self):
+        """Obtener el tamaño de la pantalla"""
+        try:
+            root = tk.Tk()
+            screen_width = root.winfo_screenwidth()
+            screen_height = root.winfo_screenheight()
+            root.destroy()
+            return screen_width, screen_height
+        except:
+            # Fallback si no funciona tkinter
+            return 1920, 1080
+    
+    def calculate_layout(self, num_cameras):
+        """Calcular la distribución óptima de ventanas"""
+        if num_cameras == 1:
+            cols, rows = 1, 1
+        elif num_cameras == 2:
+            cols, rows = 2, 1
+        elif num_cameras <= 4:
+            cols, rows = 2, 2
+        elif num_cameras <= 6:
+            cols, rows = 3, 2
+        elif num_cameras <= 9:
+            cols, rows = 3, 3
+        else:
+            # Para más de 9 cámaras, usar una grilla cuadrada
+            cols = rows = math.ceil(math.sqrt(num_cameras))
+        
+        # Calcular tamaño de cada ventana (dejando espacio para bordes)
+        margin = 10
+        window_width = (self.screen_width - margin * (cols + 1)) // cols
+        window_height = (self.screen_height - margin * (rows + 1)) // rows
+        
+        # Mantener aspect ratio 16:9
+        target_ratio = 16/9
+        if window_width / window_height > target_ratio:
+            window_width = int(window_height * target_ratio)
+        else:
+            window_height = int(window_width / target_ratio)
+        
+        self.window_size = (window_width, window_height)
+        
+        # Calcular posiciones
+        positions = []
+        for i in range(num_cameras):
+            row = i // cols
+            col = i % cols
+            x = margin + col * (window_width + margin)
+            y = margin + row * (window_height + margin)
+            positions.append((x, y))
+        
+        return positions
+    
+    def set_window_position(self, window_name, position):
+        """Establecer la posición de una ventana"""
+        x, y = position
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, self.window_size[0], self.window_size[1])
+        cv2.moveWindow(window_name, x, y)
+        self.window_positions[window_name] = position
+
 class CameraProcessor:
-    def __init__(self, camera_name, rtsp_url, camera_id):
+    def __init__(self, camera_name, rtsp_url, camera_id, window_manager, window_position):
         self.camera_name = camera_name
         self.rtsp_url = rtsp_url
         self.camera_id = camera_id
+        self.window_manager = window_manager
+        self.window_position = window_position
         self.width, self.height = 1280, 720
         self.fps = 20
         
@@ -160,6 +231,10 @@ class CameraProcessor:
         yolo_thread = threading.Thread(target=self.yolo_worker, args=(model,), daemon=True)
         yolo_thread.start()
         
+        # Configurar ventana
+        window_name = f"Camara - {self.camera_name}"
+        self.window_manager.set_window_position(window_name, self.window_position)
+        
         # Iniciar proceso FFmpeg
         try:
             self.process = subprocess.Popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -226,7 +301,7 @@ class CameraProcessor:
                 cv2.putText(annotated, self.camera_name, (10, self.height - 20), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-                cv2.imshow(f"Camara - {self.camera_name}", annotated)
+                cv2.imshow(window_name, annotated)
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
@@ -239,7 +314,7 @@ class CameraProcessor:
             self.stop_event.set()
             if self.process:
                 self.process.terminate()
-            cv2.destroyWindow(f"Camara - {self.camera_name}")
+            cv2.destroyWindow(window_name)
             print(f"[{self.camera_name}] Sistema detenido")
 
 def load_cameras_from_env():
@@ -262,7 +337,7 @@ def load_cameras_from_env():
 
 def main():
     """Función principal para manejar múltiples cámaras"""
-    print("Iniciando sistema multi-cámara YOLO...")
+    print("Iniciando sistema multi-cámara YOLO con auto-organización...")
     
     # Cargar modelo YOLO (compartido entre todas las cámaras)
     print("Cargando modelo YOLO...")
@@ -282,12 +357,22 @@ def main():
     for name, config in cameras_config.items():
         print(f"  - {name}: {config['url']}")
     
+    # Crear window manager y calcular layout
+    window_manager = WindowManager()
+    num_cameras = len(cameras_config)
+    positions = window_manager.calculate_layout(num_cameras)
+    
+    print(f"Resolución de pantalla detectada: {window_manager.screen_width}x{window_manager.screen_height}")
+    print(f"Tamaño de ventanas: {window_manager.window_size}")
+    print(f"Distribución: {math.ceil(math.sqrt(num_cameras))}x{math.ceil(num_cameras/math.ceil(math.sqrt(num_cameras)))}")
+    
     # Crear procesadores de cámara
     camera_processors = []
     camera_threads = []
     
-    for camera_name, config in cameras_config.items():
-        processor = CameraProcessor(camera_name, config['url'], config['id'])
+    for i, (camera_name, config) in enumerate(cameras_config.items()):
+        position = positions[i] if i < len(positions) else positions[0]
+        processor = CameraProcessor(camera_name, config['url'], config['id'], window_manager, position)
         camera_processors.append(processor)
         
         # Crear hilo para cada cámara
