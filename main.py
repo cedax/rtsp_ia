@@ -152,7 +152,7 @@ class CameraProcessor:
         """Iniciar grabación para esta cámara"""
         self.detection_log = []
         now = datetime.datetime.now()
-        folder_path = os.path.join("recordings", self.camera_name, str(now.year), f"{now.month:02d}", f"{now.day:02d}")
+        folder_path = os.path.join("recordings", str(now.year), f"{now.month:02d}", f"{now.day:02d}")
         os.makedirs(folder_path, exist_ok=True)
 
         filename = f"detection_{now.strftime('%Y%m%d_%H%M%S')}_{self.generate_uid()}.mp4"
