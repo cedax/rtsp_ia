@@ -304,7 +304,10 @@ class CameraProcessor:
                 cv2.putText(annotated, self.camera_name, (10, self.height - 20), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-                cv2.imshow(window_name, annotated)
+                SHOW_WINDOW_ENV = os.getenv("SHOW_WINDOW", "True").lower() in ["true", "1", "yes"]
+                if SHOW_WINDOW_ENV:
+                    cv2.imshow(window_name, annotated)
+                
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
