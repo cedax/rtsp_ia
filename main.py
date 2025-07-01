@@ -25,16 +25,19 @@ class WindowManager:
         self.window_size = None
         
     def get_screen_size(self):
-        """Obtener el tamaño de la pantalla"""
+        """Obtener el tamaño de la pantalla descontando la barra de tareas"""
         try:
             root = tk.Tk()
             screen_width = root.winfo_screenwidth()
             screen_height = root.winfo_screenheight()
+            # Descontar altura de la barra de tareas
+            taskbar_height = 50
+            usable_height = screen_height - taskbar_height
             root.destroy()
-            return screen_width, screen_height
+            return screen_width, usable_height
         except:
             # Fallback si no funciona tkinter
-            return 1920, 1080
+            return 1920, 1030
     
     def calculate_layout(self, num_cameras):
         """Calcular la distribución óptima de ventanas"""
@@ -53,7 +56,7 @@ class WindowManager:
             cols = rows = math.ceil(math.sqrt(num_cameras))
         
         # Calcular tamaño de cada ventana (dejando espacio para bordes)
-        margin = 10
+        margin = 50
         window_width = (self.screen_width - margin * (cols + 1)) // cols
         window_height = (self.screen_height - margin * (rows + 1)) // rows
         
