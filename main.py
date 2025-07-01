@@ -19,13 +19,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class WindowManager:
-    def __init__(self):
-        self.screen_width, self.screen_height = self.get_screen_size()
-        self.window_positions = {}
-        self.window_size = None
+    def __init__(self, show_windows=True):
+        self.show_windows = show_windows
+        if self.show_windows:
+            self.screen_width, self.screen_height = self.get_screen_size()
+            self.window_positions = {}
+            self.window_size = None
+        else:
+            # Valores por defecto para VPS sin GUI
+            self.screen_width, self.screen_height = 1920, 1080
+            self.window_positions = {}
+            self.window_size = (640, 480)  # Tamaño por defecto
         
     def get_screen_size(self):
         """Obtener el tamaño de la pantalla descontando la barra de tareas"""
+        if not self.show_windows:
+            return 1920, 1080
+            
         try:
             root = tk.Tk()
             screen_width = root.winfo_screenwidth()
@@ -41,6 +51,10 @@ class WindowManager:
     
     def calculate_layout(self, num_cameras):
         """Calcular la distribución óptima de ventanas"""
+        if not self.show_windows:
+            # En modo VPS, no necesitamos calcular posiciones reales
+            return [(0, 0)] * num_cameras
+            
         if num_cameras == 1:
             cols, rows = 1, 1
         elif num_cameras == 2:
@@ -82,6 +96,10 @@ class WindowManager:
     
     def set_window_position(self, window_name, position):
         """Establecer la posición de una ventana"""
+        if not self.show_windows:
+            print(f"[GUI] Ventana virtual configurada: {window_name}")
+            return
+            
         x, y = position
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(window_name, self.window_size[0], self.window_size[1])
@@ -89,12 +107,13 @@ class WindowManager:
         self.window_positions[window_name] = position
 
 class CameraProcessor:
-    def __init__(self, camera_name, rtsp_url, camera_id, window_manager, window_position):
+    def __init__(self, camera_name, rtsp_url, camera_id, window_manager, window_position, show_windows=True):
         self.camera_name = camera_name
         self.rtsp_url = rtsp_url
         self.camera_id = camera_id
         self.window_manager = window_manager
         self.window_position = window_position
+        self.show_windows = show_windows
         self.width, self.height = 1280, 720
         self.fps = 20
         
@@ -114,6 +133,12 @@ class CameraProcessor:
         self.prebuffer = deque(maxlen=self.prebuffer_seconds * self.fps)
         self.seconds_to_stop_before_last_detection = 5
         
+        # Estadísticas para modo VPS
+        self.frame_count = 0
+        self.detection_count = 0
+        self.last_stats_time = time.time()
+        self.stats_interval = 30  # Mostrar estadísticas cada 30 segundos
+        
         # Comando FFmpeg
         self.command = [
             "ffmpeg", "-rtsp_transport", "tcp", "-i", self.rtsp_url, 
@@ -123,10 +148,28 @@ class CameraProcessor:
         # Proceso FFmpeg
         self.process = None
         
-        print(f"[{self.camera_name}] Configurada - URL: {self.rtsp_url}")
+        print(f"[{self.camera_name}] Configurada - URL: {self.rtsp_url} | GUI: {'Habilitada' if self.show_windows else 'Deshabilitada'}")
 
     def generate_uid(self, length=10):
         return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
+
+    def print_stats(self):
+        """Imprimir estadísticas de la cámara (útil para modo VPS)"""
+        current_time = time.time()
+        elapsed = current_time - self.last_stats_time
+        fps_actual = self.frame_count / elapsed if elapsed > 0 else 0
+        
+        print(f"[{self.camera_name}] STATS: "
+              f"Frames: {self.frame_count} | "
+              f"FPS: {fps_actual:.1f} | "
+              f"Detecciones: {self.detection_count} | "
+              f"Grabando: {'SÍ' if self.recording else 'NO'} | "
+              f"Última detección: {time.time() - self.last_detection_time:.1f}s")
+        
+        # Reset contadores
+        self.frame_count = 0
+        self.detection_count = 0
+        self.last_stats_time = current_time
 
     def yolo_worker(self, model):
         """Worker para procesamiento YOLO específico de esta cámara"""
@@ -140,6 +183,7 @@ class CameraProcessor:
                 ]
                 if any(conf >= self.conf_threshold for *_, conf in self.detections):
                     self.last_detection_time = time.time()
+                    self.detection_count += len([d for d in self.detections if d[5] >= self.conf_threshold])
                     for *_, label, conf in self.detections:
                         if conf >= self.conf_threshold:
                             print(f"[{self.camera_name}] Detectado: {label} con {conf*100:.2f}% de confianza")
@@ -234,9 +278,10 @@ class CameraProcessor:
         yolo_thread = threading.Thread(target=self.yolo_worker, args=(model,), daemon=True)
         yolo_thread.start()
         
-        # Configurar ventana
+        # Configurar ventana solo si GUI está habilitada
         window_name = f"Camara - {self.camera_name}"
-        self.window_manager.set_window_position(window_name, self.window_position)
+        if self.show_windows:
+            self.window_manager.set_window_position(window_name, self.window_position)
         
         # Iniciar proceso FFmpeg
         try:
@@ -254,21 +299,35 @@ class CameraProcessor:
                     break
 
                 frame = np.frombuffer(raw, np.uint8).reshape((self.height, self.width, 3))
+                self.frame_count += 1
 
                 # Enviar a detección
                 if not self.frame_queue.full():
                     self.frame_queue.put_nowait(frame.copy())
 
-                # Dibujar detecciones
-                annotated = frame.copy()
-                for x1, y1, x2, y2, label, conf in self.detections:
-                    if conf >= self.conf_threshold:
-                        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(annotated, f"{label} {conf*100:.1f}%", (x1, y1-10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                # Crear frame anotado solo si se van a mostrar ventanas o se está grabando
+                annotated = None
+                if self.show_windows or self.recording:
+                    annotated = frame.copy()
+                    
+                    # Dibujar detecciones
+                    for x1, y1, x2, y2, label, conf in self.detections:
+                        if conf >= self.conf_threshold:
+                            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(annotated, f"{label} {conf*100:.1f}%", (x1, y1-10),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-                # Agregar al prebuffer
-                self.prebuffer.append(annotated.copy())
+                    # Mostrar estado de grabación
+                    if self.recording:
+                        cv2.putText(annotated, "GRABANDO", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    
+                    # Mostrar nombre de cámara
+                    cv2.putText(annotated, self.camera_name, (10, self.height - 20), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                # Agregar al prebuffer (usar frame anotado si existe, sino el original)
+                buffer_frame = annotated if annotated is not None else frame
+                self.prebuffer.append(buffer_frame.copy())
 
                 # Guardar detecciones si está grabando
                 if self.recording and self.detections:
@@ -293,24 +352,20 @@ class CameraProcessor:
                     self.stop_recording()
 
                 # Grabar frame
-                if self.recording and self.video_writer:
+                if self.recording and self.video_writer and annotated is not None:
                     self.video_writer.write(annotated)
 
-                # Mostrar estado
-                if self.recording:
-                    cv2.putText(annotated, "GRABANDO", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                
-                # Mostrar nombre de cámara
-                cv2.putText(annotated, self.camera_name, (10, self.height - 20), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-                SHOW_WINDOW_ENV = os.getenv("SHOW_WINDOW", "True").lower() in ["true", "1", "yes"]
-                if SHOW_WINDOW_ENV:
+                # Mostrar ventana solo si GUI está habilitada
+                if self.show_windows and annotated is not None:
                     cv2.imshow(window_name, annotated)
-                
-
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+                    
+                    # Verificar tecla de salida
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+                else:
+                    # En modo VPS, mostrar estadísticas periódicamente
+                    if current_time - self.last_stats_time >= self.stats_interval:
+                        self.print_stats()
 
         except Exception as e:
             print(f"[{self.camera_name}] Error en procesamiento: {e}")
@@ -320,7 +375,8 @@ class CameraProcessor:
             self.stop_event.set()
             if self.process:
                 self.process.terminate()
-            cv2.destroyWindow(window_name)
+            if self.show_windows:
+                cv2.destroyWindow(window_name)
             print(f"[{self.camera_name}] Sistema detenido")
 
 def load_cameras_from_env():
@@ -343,7 +399,11 @@ def load_cameras_from_env():
 
 def main():
     """Función principal para manejar múltiples cámaras"""
-    print("Iniciando sistema multi-cámara YOLO con auto-organización...")
+    # Verificar si se deben mostrar ventanas
+    show_windows = os.getenv('SHOW_WINDOW_ENV', 'true').lower() in ['true', '1', 'yes', 'on']
+    
+    mode_text = "con interfaz gráfica" if show_windows else "modo VPS (sin GUI)"
+    print(f"Iniciando sistema multi-cámara YOLO {mode_text}...")
     
     # Cargar modelo YOLO (compartido entre todas las cámaras)
     print("Cargando modelo YOLO...")
@@ -357,6 +417,7 @@ def main():
         print("Ejemplo de configuración en .env:")
         print("CAMERA_1=rtsp://192.168.1.100:554/stream1")
         print("CAMERA_2=rtsp://192.168.1.101:554/stream1")
+        print("SHOW_WINDOW_ENV=false  # Para modo VPS sin GUI")
         return
     
     print(f"Cámaras encontradas: {len(cameras_config)}")
@@ -364,13 +425,18 @@ def main():
         print(f"  - {name}: {config['url']}")
     
     # Crear window manager y calcular layout
-    window_manager = WindowManager()
+    window_manager = WindowManager(show_windows=show_windows)
     num_cameras = len(cameras_config)
     positions = window_manager.calculate_layout(num_cameras)
     
-    print(f"Resolución de pantalla detectada: {window_manager.screen_width}x{window_manager.screen_height}")
-    print(f"Tamaño de ventanas: {window_manager.window_size}")
-    print(f"Distribución: {math.ceil(math.sqrt(num_cameras))}x{math.ceil(num_cameras/math.ceil(math.sqrt(num_cameras)))}")
+    if show_windows:
+        print(f"Resolución de pantalla detectada: {window_manager.screen_width}x{window_manager.screen_height}")
+        print(f"Tamaño de ventanas: {window_manager.window_size}")
+        print(f"Distribución: {math.ceil(math.sqrt(num_cameras))}x{math.ceil(num_cameras/math.ceil(math.sqrt(num_cameras)))}")
+    else:
+        print("Modo VPS activado - Las ventanas están deshabilitadas")
+        print("El sistema seguirá procesando, grabando y detectando objetos")
+        print("Las estadísticas se mostrarán cada 30 segundos por cámara")
     
     # Crear procesadores de cámara
     camera_processors = []
@@ -378,7 +444,14 @@ def main():
     
     for i, (camera_name, config) in enumerate(cameras_config.items()):
         position = positions[i] if i < len(positions) else positions[0]
-        processor = CameraProcessor(camera_name, config['url'], config['id'], window_manager, position)
+        processor = CameraProcessor(
+            camera_name, 
+            config['url'], 
+            config['id'], 
+            window_manager, 
+            position,
+            show_windows=show_windows
+        )
         camera_processors.append(processor)
         
         # Crear hilo para cada cámara
@@ -391,7 +464,10 @@ def main():
         camera_threads.append(thread)
         thread.start()
     
-    print("Todas las cámaras iniciadas. Presiona 'q' en cualquier ventana para salir.")
+    if show_windows:
+        print("Todas las cámaras iniciadas. Presiona 'q' en cualquier ventana para salir.")
+    else:
+        print("Todas las cámaras iniciadas en modo VPS. Presiona Ctrl+C para salir.")
     
     try:
         # Esperar a que todos los hilos terminen
@@ -404,8 +480,9 @@ def main():
         for processor in camera_processors:
             processor.stop_event.set()
         
-        # Cerrar todas las ventanas
-        cv2.destroyAllWindows()
+        # Cerrar todas las ventanas si GUI está habilitada
+        if show_windows:
+            cv2.destroyAllWindows()
         print("Sistema completamente cerrado")
 
 if __name__ == "__main__":
