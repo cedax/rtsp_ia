@@ -68,7 +68,7 @@ def rate_limit_check():
 def record_failed_attempt():
     """Registra un intento fallido de login"""
     client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
-    current_time = datetime.now()
+    current_time = datetime.now().isoformat()
     
     if 'login_attempts' not in session:
         session['login_attempts'] = {}
