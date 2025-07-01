@@ -51,18 +51,28 @@ def rate_limit_check():
     if 'login_attempts' not in session:
         session['login_attempts'] = {}
     
-    # Limpiar intentos antiguos (más de 15 minutos)
-    session['login_attempts'] = {
-        ip: attempts for ip, attempts in session['login_attempts'].items()
-        if current_time - attempts['last_attempt'] < timedelta(minutes=15)
-    }
-    
+    # ✅ Usar bucle clásico para limpiar intentos antiguos
+    cleaned_attempts = {}
+    for ip, attempts in session['login_attempts'].items():
+        try:
+            last_attempt = datetime.fromisoformat(attempts['last_attempt'])
+            if current_time - last_attempt < timedelta(minutes=15):
+                cleaned_attempts[ip] = attempts
+        except Exception:
+            continue  # en caso de formato inválido o dato corrupto
+
+    session['login_attempts'] = cleaned_attempts
+
+    # ✅ Verificar si el cliente está bloqueado
     if client_ip in session['login_attempts']:
         attempts = session['login_attempts'][client_ip]
-        if attempts['count'] >= 5:  # Máximo 5 intentos
-            if current_time - attempts['last_attempt'] < timedelta(minutes=15):
+        try:
+            last_attempt = datetime.fromisoformat(attempts['last_attempt'])
+            if attempts['count'] >= 5 and current_time - last_attempt < timedelta(minutes=15):
                 return False
-    
+        except Exception:
+            pass  # si el dato está corrupto, no bloquear
+
     return True
 
 def record_failed_attempt():
