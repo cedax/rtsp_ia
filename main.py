@@ -118,7 +118,8 @@ class CameraProcessor:
         self.fps = 20
         
         # Variables específicas de la cámara
-        self.frame_queue = queue.Queue(maxsize=1)
+        self.frame_queue = queue.Queue(maxsize=2)  # Aumentado para mejor buffering
+        self.detection_queue = queue.Queue(maxsize=5)  # Queue para resultados de detección
         self.stop_event = threading.Event()
         self.detections = []
         self.recording = False
@@ -127,6 +128,10 @@ class CameraProcessor:
         self.detection_log = []
         self.current_video_path = None
         self.conf_threshold = 0.55
+        
+        # Modelo YOLO individual para esta cámara
+        self.yolo_model = None
+        self.model_loaded = False
         
         # Buffer circular para pregrabación
         self.prebuffer_seconds = 5
@@ -150,6 +155,17 @@ class CameraProcessor:
         
         print(f"[{self.camera_name}] Configurada - URL: {self.rtsp_url} | GUI: {'Habilitada' if self.show_windows else 'Deshabilitada'}")
 
+    def load_yolo_model(self):
+        """Cargar modelo YOLO específico para esta cámara"""
+        try:
+            print(f"[{self.camera_name}] Cargando modelo YOLO...")
+            self.yolo_model = YOLO("yolov8n.pt")
+            self.model_loaded = True
+            print(f"[{self.camera_name}] Modelo YOLO cargado exitosamente")
+        except Exception as e:
+            print(f"[{self.camera_name}] Error cargando modelo YOLO: {e}")
+            self.model_loaded = False
+
     def generate_uid(self, length=10):
         return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
 
@@ -164,33 +180,68 @@ class CameraProcessor:
               f"FPS: {fps_actual:.1f} | "
               f"Detecciones: {self.detection_count} | "
               f"Grabando: {'SÍ' if self.recording else 'NO'} | "
-              f"Última detección: {time.time() - self.last_detection_time:.1f}s")
+              f"Última detección: {time.time() - self.last_detection_time:.1f}s | "
+              f"Queue: {self.frame_queue.qsize()}/{self.frame_queue.maxsize}")
         
         # Reset contadores
         self.frame_count = 0
         self.detection_count = 0
         self.last_stats_time = current_time
 
-    def yolo_worker(self, model):
+    def yolo_worker(self):
         """Worker para procesamiento YOLO específico de esta cámara"""
+        if not self.model_loaded:
+            print(f"[{self.camera_name}] YOLO Worker: Modelo no cargado, terminando...")
+            return
+            
+        print(f"[{self.camera_name}] YOLO Worker iniciado")
+        
         while not self.stop_event.is_set():
             try:
+                # Obtener frame para procesar
                 frame = self.frame_queue.get(timeout=1)
-                results = model(frame, conf=self.conf_threshold, iou=0.45, verbose=False)[0]
-                self.detections = [
-                    (int(b.xyxy[0][0]), int(b.xyxy[0][1]), int(b.xyxy[0][2]), int(b.xyxy[0][3]),
-                     model.names[int(b.cls[0])], float(b.conf[0])) for b in results.boxes
-                ]
-                if any(conf >= self.conf_threshold for *_, conf in self.detections):
-                    self.last_detection_time = time.time()
-                    self.detection_count += len([d for d in self.detections if d[5] >= self.conf_threshold])
-                    for *_, label, conf in self.detections:
-                        if conf >= self.conf_threshold:
-                            print(f"[{self.camera_name}] Detectado: {label} con {conf*100:.2f}% de confianza")
+                
+                # Procesar con YOLO
+                start_time = time.time()
+                results = self.yolo_model(frame, conf=self.conf_threshold, iou=0.45, verbose=False)[0]
+                processing_time = time.time() - start_time
+                
+                # Extraer detecciones
+                detections = []
+                if results.boxes is not None:
+                    for box in results.boxes:
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                        conf = float(box.conf[0].cpu().numpy())
+                        cls = int(box.cls[0].cpu().numpy())
+                        label = self.yolo_model.names[cls]
+                        
+                        detections.append((int(x1), int(y1), int(x2), int(y2), label, conf))
+                
+                # Enviar resultados al hilo principal
+                detection_result = {
+                    'detections': detections,
+                    'timestamp': time.time(),
+                    'processing_time': processing_time
+                }
+                
+                if not self.detection_queue.full():
+                    self.detection_queue.put_nowait(detection_result)
+                
+                # Actualizar estadísticas si hay detecciones válidas
+                valid_detections = [d for d in detections if d[5] >= self.conf_threshold]
+                if valid_detections:
+                    self.detection_count += len(valid_detections)
+                    for *_, label, conf in valid_detections:
+                        print(f"[{self.camera_name}] Detectado: {label} con {conf*100:.2f}% de confianza (procesado en {processing_time*1000:.1f}ms)")
+                
                 self.frame_queue.task_done()
-            except (queue.Empty, Exception) as e:
-                if not isinstance(e, queue.Empty):
-                    print(f"[{self.camera_name}] YOLO ERROR: {e}")
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[{self.camera_name}] YOLO Worker ERROR: {e}")
+                
+        print(f"[{self.camera_name}] YOLO Worker terminado")
 
     def start_recording(self):
         """Iniciar grabación para esta cámara"""
@@ -272,10 +323,17 @@ class CameraProcessor:
         except Exception as e:
             print(f"[{self.camera_name}] Error en optimización: {e}")
 
-    def process_camera(self, model):
+    def process_camera(self):
         """Proceso principal para esta cámara"""
-        # Iniciar worker YOLO
-        yolo_thread = threading.Thread(target=self.yolo_worker, args=(model,), daemon=True)
+        # Cargar modelo YOLO específico para esta cámara
+        self.load_yolo_model()
+        
+        if not self.model_loaded:
+            print(f"[{self.camera_name}] No se pudo cargar el modelo YOLO, terminando...")
+            return
+        
+        # Iniciar worker YOLO en hilo separado
+        yolo_thread = threading.Thread(target=self.yolo_worker, daemon=True, name=f"YOLO-{self.camera_name}")
         yolo_thread.start()
         
         # Configurar ventana solo si GUI está habilitada
@@ -293,6 +351,7 @@ class CameraProcessor:
 
         try:
             while not self.stop_event.is_set():
+                # Leer frame desde FFmpeg
                 raw = self.process.stdout.read(self.width * self.height * 3)
                 if len(raw) != self.width * self.height * 3:
                     print(f"[{self.camera_name}] Error leyendo frame, reconectando...")
@@ -301,9 +360,26 @@ class CameraProcessor:
                 frame = np.frombuffer(raw, np.uint8).reshape((self.height, self.width, 3))
                 self.frame_count += 1
 
-                # Enviar a detección
+                # Enviar frame a detección YOLO (non-blocking)
                 if not self.frame_queue.full():
                     self.frame_queue.put_nowait(frame.copy())
+                else:
+                    # Si la queue está llena, skip este frame para evitar lag
+                    pass
+
+                # Procesar resultados de detección disponibles
+                try:
+                    while not self.detection_queue.empty():
+                        detection_result = self.detection_queue.get_nowait()
+                        self.detections = detection_result['detections']
+                        
+                        # Actualizar tiempo de última detección si hay detecciones válidas
+                        valid_detections = [d for d in self.detections if d[5] >= self.conf_threshold]
+                        if valid_detections:
+                            self.last_detection_time = detection_result['timestamp']
+                            
+                except queue.Empty:
+                    pass
 
                 # Crear frame anotado solo si se van a mostrar ventanas o se está grabando
                 annotated = None
@@ -321,9 +397,9 @@ class CameraProcessor:
                     if self.recording:
                         cv2.putText(annotated, "GRABANDO", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                     
-                    # Mostrar nombre de cámara
-                    cv2.putText(annotated, self.camera_name, (10, self.height - 20), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    # Mostrar nombre de cámara y FPS
+                    cv2.putText(annotated, f"{self.camera_name} | Q:{self.frame_queue.qsize()}", 
+                               (10, self.height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
                 # Agregar al prebuffer (usar frame anotado si existe, sino el original)
                 buffer_frame = annotated if annotated is not None else frame
@@ -403,11 +479,8 @@ def main():
     show_windows = os.getenv('SHOW_WINDOW_ENV', 'true').lower() in ['true', '1', 'yes', 'on']
     
     mode_text = "con interfaz gráfica" if show_windows else "modo VPS (sin GUI)"
-    print(f"Iniciando sistema multi-cámara YOLO {mode_text}...")
-    
-    # Cargar modelo YOLO (compartido entre todas las cámaras)
-    print("Cargando modelo YOLO...")
-    model = YOLO("yolov8n.pt")
+    print(f"Iniciando sistema multi-cámara YOLO optimizado {mode_text}...")
+    print("MEJORAS: Cada cámara tiene su propio modelo YOLO en hilos separados")
     
     # Cargar configuración de cámaras
     cameras_config = load_cameras_from_env()
@@ -442,6 +515,8 @@ def main():
     camera_processors = []
     camera_threads = []
     
+    print(f"\nCargando {num_cameras} modelos YOLO independientes...")
+    
     for i, (camera_name, config) in enumerate(cameras_config.items()):
         position = positions[i] if i < len(positions) else positions[0]
         processor = CameraProcessor(
@@ -457,7 +532,6 @@ def main():
         # Crear hilo para cada cámara
         thread = threading.Thread(
             target=processor.process_camera, 
-            args=(model,), 
             daemon=True,
             name=f"Camera-{camera_name}"
         )
@@ -468,6 +542,8 @@ def main():
         print("Todas las cámaras iniciadas. Presiona 'q' en cualquier ventana para salir.")
     else:
         print("Todas las cámaras iniciadas en modo VPS. Presiona Ctrl+C para salir.")
+    
+    print(f"Memoria optimizada: {num_cameras} modelos YOLO ejecutándose en paralelo")
     
     try:
         # Esperar a que todos los hilos terminen
