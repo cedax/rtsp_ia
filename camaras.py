@@ -51,13 +51,14 @@ class VideoWindow:
         try:
             if not self.frame_queue.empty():
                 frame_array = self.frame_queue.get_nowait()
-                image = Image.fromarray(frame_array)
-                image = image.resize((640, 480), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(image)
-                
-                self.canvas.delete("all")
-                self.canvas.create_image(0, 0, anchor=tk.NW, image=photo)
-                self.current_image = photo
+                if frame_array is not None and frame_array.size > 0:  # Agregar esta validación
+                    image = Image.fromarray(frame_array)
+                    image = image.resize((640, 480), Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(image)
+                    
+                    self.canvas.delete("all")
+                    self.canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+                    self.current_image = photo
         except Exception as e:
             print(f"Error actualizando ventana cámara {self.camera_index}: {e}")
     
@@ -143,7 +144,7 @@ class RTSPViewer:
                             'class': self.class_names[cls],
                             'confidence': float(conf),
                             'bbox': [int(x1), int(y1), int(x2), int(y2)],
-                            'center': [(x1+x2)//2, (y1+y2)//2]
+                            'center': [int((x1+x2)//2), int((y1+y2)//2)]  # Convertir explícitamente a int nativo de Python
                         })
         
         return detections
@@ -206,19 +207,33 @@ class RTSPViewer:
             if result.returncode == 0:
                 print(f"Grabación guardada: {video_path}")
                 
-                # Guardar metadatos
+                # Guardar metadatos - Asegurar que todos los valores sean serializables
                 frame_count = os.path.getsize(temp_file) // (self.frame_width * self.frame_height * 3)
+                
+                # Limpiar detecciones para asegurar serialización JSON
+                clean_detections = []
+                for detection in detections_log:
+                    clean_detection = {
+                        'class': str(detection['class']),
+                        'confidence': float(detection['confidence']),
+                        'bbox': [int(x) for x in detection['bbox']],
+                        'center': [int(x) for x in detection['center']]
+                    }
+                    clean_detections.append(clean_detection)
+                
                 metadata = {
                     'video_filename': filename,
-                    'camera_index': camera_index,
+                    'camera_index': int(camera_index),
                     'timestamp': datetime.now().isoformat(),
-                    'detections': detections_log,
+                    'detections': clean_detections,
                     'total_frames': int(frame_count),
                     'duration_seconds': float(frame_count / self.frame_rate)
                 }
                 
                 with open(json_path, 'w') as f:
                     json.dump(metadata, f, indent=2)
+                    
+                print(f"Metadatos guardados: {json_path}")
             else:
                 print(f"Error guardando video: {result.stderr.decode()}")
         except Exception as e:
