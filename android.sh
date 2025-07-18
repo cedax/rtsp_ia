@@ -33,7 +33,8 @@ function redirigir_a_camaras() {
   echo "Cámaras encontradas: ${#camaras[@]}"
 
   for ip in "${camaras[@]}"; do
-    if [[ -z "$ip" ]]; then
+    ip_trimmed="$(echo -n "$ip" | tr -d '[:space:]')"
+    if [[ -z "$ip_trimmed" ]]; then
         continue
     fi
 
