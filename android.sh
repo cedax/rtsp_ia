@@ -6,9 +6,7 @@ PID_FILE="/data/data/com.termux/files/usr/tmp/socat_pids.txt"
 
 BLOQUES=(
   "192.168.0.0-63"
-  "192.168.0.64-127"
-  "192.168.0.128-191"
-  "192.168.0.192-254"
+  "192.168.0.64-101"
 )
 
 function escanear_bloques() {
@@ -35,6 +33,10 @@ function redirigir_a_camaras() {
   echo "Cámaras encontradas: ${#camaras[@]}"
 
   for ip in "${camaras[@]}"; do
+    if [[ -z "$ip" ]]; then
+        continue
+    fi
+
     if (( index >= ${#PUERTOS_LOCALES[@]} )); then
       echo "⚠️  Se detectaron más de ${#PUERTOS_LOCALES[@]} cámaras. Solo se redirigen las primeras 5."
       break
