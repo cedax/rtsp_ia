@@ -1,190 +1,239 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/bin/bash
 
-CAM_PORT=554
+# Script para escanear red y redirigir puertos usando socat en Termux
+# Autor: Script automatizado para Termux
+
+# Colores para output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Puertos locales disponibles
 PUERTOS_LOCALES=(8451 8453 8455 8457 8459)
-PID_FILE="/data/data/com.termux/files/usr/tmp/socat_pids.txt"
 
-BLOQUES=(
-  "192.168.0.0-63"
-  "192.168.0.64-101"
-)
+# Función para mostrar banner
+mostrar_banner() {
+    echo -e "${BLUE}"
+    echo "=================================="
+    echo "   ESCANER DE RED Y REDIRECTOR"
+    echo "          TERMUX SCRIPT"
+    echo "=================================="
+    echo -e "${NC}"
+}
 
-function escanear_bloques() {
-  local ip
-  local ips_encontradas=()
-
-  echo "🔍 Escaneando bloques con nmap..."
-
-  for bloque in "${BLOQUES[@]}"; do
-    echo "  Escaneando rango $bloque ..."
-    # Mejorado: filtrar líneas vacías y espacios directamente en el pipeline
-    mapfile -t ips < <(nmap -p $CAM_PORT --open --max-retries 1 --host-timeout 2s "$bloque" -oG - | awk '/554\/open/{print $2}' | grep -v '^[[:space:]]*
-
-function redirigir_a_camaras() {
-  local index=0
-  > "$PID_FILE"
-
-  mapfile -t camaras < <(escanear_bloques | sort -u)
-
-  echo "Cámaras encontradas: ${#camaras[@]}"
-
-  for ip in "${camaras[@]}"; do
-    # Validación más robusta de IP
-    if [[ -z "$ip" || "$ip" =~ ^[[:space:]]*$ ]]; then
-        echo "⚠️  IP vacía o con espacios detectada, saltando..."
-        continue
+# Función para validar formato IP
+validar_ip() {
+    local ip=$1
+    if [[ $ip =~ ^192\.168\.0\.[0-9]+$ ]]; then
+        local ultimo_octeto=$(echo $ip | cut -d'.' -f4)
+        if [[ $ultimo_octeto -ge 0 && $ultimo_octeto -le 255 ]]; then
+            return 0
+        fi
     fi
+    return 1
+}
+
+# Función para escanear la red
+escanear_red() {
+    echo -e "${YELLOW}[INFO]${NC} Iniciando escaneo de red 192.168.0.0-120 en puerto 554..."
+    echo -e "${YELLOW}[INFO]${NC} Esto puede tomar unos minutos..."
     
-    # Validación adicional: verificar que la IP tenga formato válido
-    if ! [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        echo "⚠️  IP inválida detectada: '$ip', saltando..."
-        continue
-    fi
-
-    if (( index >= ${#PUERTOS_LOCALES[@]} )); then
-      echo "⚠️  Se detectaron más de ${#PUERTOS_LOCALES[@]} cámaras. Solo se redirigen las primeras 5."
-      break
-    fi
-
-    local puerto_local=${PUERTOS_LOCALES[$index]}
-    echo "🔁 Redirigiendo puerto local $puerto_local → $ip:$CAM_PORT"
-
-    nohup socat TCP-LISTEN:$puerto_local,fork TCP:$ip:$CAM_PORT >/dev/null 2>&1 &
-    echo $! >> "$PID_FILE"
-    echo "✅ Redirección activa para $ip en puerto local $puerto_local (PID $!)"
-    ((index++))
-  done
-
-  if (( index == 0 )); then
-    echo "❌ No se encontraron cámaras con el puerto $CAM_PORT abierto."
-  fi
-}
-
-function matar_redirecciones() {
-  if [[ ! -f "$PID_FILE" ]]; then
-    echo "ℹ️  No hay procesos socat guardados para matar."
-    return
-  fi
-
-  echo "🛑 Matando procesos socat anteriores..."
-  while read -r pid; do
-    if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid"
-      echo "✔️  Proceso socat (PID $pid) detenido."
-    fi
-  done < "$PID_FILE"
-  rm -f "$PID_FILE"
-  echo "✅ Todos los procesos socat finalizados."
-}
-
-function menu() {
-  while true; do
-    echo ""
-    echo "====== Redirección automática de cámaras RTSP ======"
-    echo "1) Buscar cámaras y redirigir automáticamente (máx 5)"
-    echo "2) Matar redirecciones socat activas"
-    echo "3) Salir"
-    read -rp "Elige una opción: " opt
-
-    case "$opt" in
-      1) redirigir_a_camaras ;;
-      2) matar_redirecciones ;;
-      3) exit 0 ;;
-      *) echo "❌ Opción inválida, intenta de nuevo." ;;
-    esac
-    echo
-  done
-}
-
-menu | tr -d '[:space:]')
-    # Agregar cada IP individualmente para evitar concatenación
-    for ip in "${ips[@]}"; do
-      if [[ -n "$ip" ]]; then
-        ips_encontradas+=("$ip")
-      fi
+    # Crear archivo temporal para resultados
+    local temp_file=$(mktemp)
+    
+    # Escanear red con nmap
+    nmap -p 554 --open -T4 192.168.0.0-120 2>/dev/null | grep -E "Nmap scan report|554/tcp" | while read line; do
+        if [[ $line =~ "Nmap scan report for" ]]; then
+            current_ip=$(echo $line | grep -oE '192\.168\.0\.[0-9]+')
+            echo "$current_ip" >> "$temp_file.tmp"
+        elif [[ $line =~ "554/tcp" && $line =~ "open" ]]; then
+            # IP tiene puerto 554 abierto
+            if [[ -f "$temp_file.tmp" ]]; then
+                tail -n1 "$temp_file.tmp" >> "$temp_file"
+            fi
+        fi
     done
-  done
-
-  # Imprimir cada IP en su propia línea
-  for ip in "${ips_encontradas[@]}"; do
-    echo "$ip"
-  done
-}
-
-function redirigir_a_camaras() {
-  local index=0
-  > "$PID_FILE"
-
-  mapfile -t camaras < <(escanear_bloques | sort -u)
-
-  echo "Cámaras encontradas: ${#camaras[@]}"
-
-  for ip in "${camaras[@]}"; do
-    # Validación más robusta de IP
-    if [[ -z "$ip" || "$ip" =~ ^[[:space:]]*$ ]]; then
-        echo "⚠️  IP vacía o con espacios detectada, saltando..."
-        continue
+    
+    # Leer IPs válidas
+    local ips_encontradas=()
+    if [[ -f "$temp_file" ]]; then
+        while IFS= read -r ip; do
+            if validar_ip "$ip"; then
+                ips_encontradas+=("$ip")
+            fi
+        done < "$temp_file"
     fi
     
-    # Validación adicional: verificar que la IP tenga formato válido
-    if ! [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        echo "⚠️  IP inválida detectada: '$ip', saltando..."
-        continue
+    # Limpiar archivos temporales
+    rm -f "$temp_file" "$temp_file.tmp"
+    
+    # Mostrar resultados
+    if [[ ${#ips_encontradas[@]} -eq 0 ]]; then
+        echo -e "${RED}[ERROR]${NC} No se encontraron IPs con puerto 554 abierto"
+        return 1
     fi
-
-    if (( index >= ${#PUERTOS_LOCALES[@]} )); then
-      echo "⚠️  Se detectaron más de ${#PUERTOS_LOCALES[@]} cámaras. Solo se redirigen las primeras 5."
-      break
-    fi
-
-    local puerto_local=${PUERTOS_LOCALES[$index]}
-    echo "🔁 Redirigiendo puerto local $puerto_local → $ip:$CAM_PORT"
-
-    nohup socat TCP-LISTEN:$puerto_local,fork TCP:$ip:$CAM_PORT >/dev/null 2>&1 &
-    echo $! >> "$PID_FILE"
-    echo "✅ Redirección activa para $ip en puerto local $puerto_local (PID $!)"
-    ((index++))
-  done
-
-  if (( index == 0 )); then
-    echo "❌ No se encontraron cámaras con el puerto $CAM_PORT abierto."
-  fi
+    
+    echo -e "${GREEN}[EXITO]${NC} Se encontraron ${#ips_encontradas[@]} IP(s) con puerto 554 abierto:"
+    for ip in "${ips_encontradas[@]}"; do
+        echo -e "  ${GREEN}→${NC} $ip:554"
+    done
+    
+    # Configurar redirecciones
+    configurar_redirecciones "${ips_encontradas[@]}"
 }
 
-function matar_redirecciones() {
-  if [[ ! -f "$PID_FILE" ]]; then
-    echo "ℹ️  No hay procesos socat guardados para matar."
-    return
-  fi
-
-  echo "🛑 Matando procesos socat anteriores..."
-  while read -r pid; do
-    if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid"
-      echo "✔️  Proceso socat (PID $pid) detenido."
+# Función para configurar redirecciones
+configurar_redirecciones() {
+    local ips=("$@")
+    local max_redirecciones=${#PUERTOS_LOCALES[@]}
+    local redirecciones_creadas=0
+    
+    echo -e "\n${YELLOW}[INFO]${NC} Configurando redirecciones de puertos..."
+    
+    for i in "${!ips[@]}"; do
+        if [[ $redirecciones_creadas -ge $max_redirecciones ]]; then
+            echo -e "${YELLOW}[ADVERTENCIA]${NC} Se alcanzó el límite de puertos locales disponibles ($max_redirecciones)"
+            break
+        fi
+        
+        local ip="${ips[$i]}"
+        local puerto_local="${PUERTOS_LOCALES[$redirecciones_creadas]}"
+        
+        # Crear redirección con socat
+        echo -e "${BLUE}[INFO]${NC} Creando redirección: localhost:$puerto_local → $ip:554"
+        
+        # Ejecutar socat en background
+        socat TCP-LISTEN:$puerto_local,fork TCP:$ip:554 &
+        local pid=$!
+        
+        if [[ $? -eq 0 ]]; then
+            echo -e "${GREEN}[EXITO]${NC} Redirección activa - PID: $pid"
+            echo "$pid" >> /tmp/socat_pids.txt
+            redirecciones_creadas=$((redirecciones_creadas + 1))
+        else
+            echo -e "${RED}[ERROR]${NC} Error al crear redirección para $ip:554"
+        fi
+    done
+    
+    if [[ $redirecciones_creadas -gt 0 ]]; then
+        echo -e "\n${GREEN}[RESUMEN]${NC} Se crearon $redirecciones_creadas redirecciones activas"
+        echo -e "${YELLOW}[INFO]${NC} Para detener las redirecciones, usa la opción 2 del menú"
     fi
-  done < "$PID_FILE"
-  rm -f "$PID_FILE"
-  echo "✅ Todos los procesos socat finalizados."
 }
 
-function menu() {
-  while true; do
-    echo ""
-    echo "====== Redirección automática de cámaras RTSP ======"
-    echo "1) Buscar cámaras y redirigir automáticamente (máx 5)"
-    echo "2) Matar redirecciones socat activas"
-    echo "3) Salir"
-    read -rp "Elige una opción: " opt
-
-    case "$opt" in
-      1) redirigir_a_camaras ;;
-      2) matar_redirecciones ;;
-      3) exit 0 ;;
-      *) echo "❌ Opción inválida, intenta de nuevo." ;;
-    esac
-    echo
-  done
+# Función para matar todos los procesos socat
+matar_socat() {
+    echo -e "${YELLOW}[INFO]${NC} Deteniendo todas las redirecciones activas..."
+    
+    # Buscar PIDs guardados
+    if [[ -f /tmp/socat_pids.txt ]]; then
+        local pids_detenidos=0
+        while IFS= read -r pid; do
+            if kill "$pid" 2>/dev/null; then
+                echo -e "${GREEN}[EXITO]${NC} Proceso detenido - PID: $pid"
+                pids_detenidos=$((pids_detenidos + 1))
+            fi
+        done < /tmp/socat_pids.txt
+        
+        rm -f /tmp/socat_pids.txt
+        echo -e "${GREEN}[RESUMEN]${NC} Se detuvieron $pids_detenidos procesos"
+    fi
+    
+    # Buscar y matar cualquier proceso socat restante
+    local socat_pids=$(pgrep socat)
+    if [[ -n "$socat_pids" ]]; then
+        echo -e "${YELLOW}[INFO]${NC} Deteniendo procesos socat adicionales..."
+        pkill socat
+        echo -e "${GREEN}[EXITO]${NC} Todos los procesos socat han sido detenidos"
+    else
+        echo -e "${BLUE}[INFO]${NC} No se encontraron procesos socat activos"
+    fi
 }
 
-menu
+# Función para mostrar procesos activos
+mostrar_procesos() {
+    echo -e "${YELLOW}[INFO]${NC} Procesos socat activos:"
+    local procesos=$(pgrep -l socat)
+    
+    if [[ -n "$procesos" ]]; then
+        echo "$procesos" | while read pid name; do
+            echo -e "${GREEN}→${NC} PID: $pid - $name"
+        done
+    else
+        echo -e "${BLUE}[INFO]${NC} No hay procesos socat activos"
+    fi
+}
+
+# Función para verificar dependencias
+verificar_dependencias() {
+    local dependencias=("nmap" "socat")
+    local faltantes=()
+    
+    for dep in "${dependencias[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            faltantes+=("$dep")
+        fi
+    done
+    
+    if [[ ${#faltantes[@]} -gt 0 ]]; then
+        echo -e "${RED}[ERROR]${NC} Faltan las siguientes dependencias:"
+        for dep in "${faltantes[@]}"; do
+            echo -e "  ${RED}→${NC} $dep"
+        done
+        echo -e "\n${YELLOW}[SOLUCION]${NC} Instala las dependencias con:"
+        echo -e "  ${BLUE}pkg install nmap socat${NC}"
+        exit 1
+    fi
+}
+
+# Función para mostrar menú
+mostrar_menu() {
+    echo -e "\n${BLUE}===== MENU PRINCIPAL =====${NC}"
+    echo "1. Escanear red y configurar redirecciones"
+    echo "2. Detener todas las redirecciones"
+    echo "3. Mostrar procesos activos"
+    echo "4. Salir"
+    echo -e "${BLUE}===========================${NC}"
+    echo -n "Selecciona una opción: "
+}
+
+# Función principal
+main() {
+    mostrar_banner
+    verificar_dependencias
+    
+    while true; do
+        mostrar_menu
+        read -r opcion
+        
+        case $opcion in
+            1)
+                echo -e "\n${YELLOW}[INFO]${NC} Iniciando escaneo de red..."
+                escanear_red
+                ;;
+            2)
+                echo -e "\n${YELLOW}[INFO]${NC} Deteniendo redirecciones..."
+                matar_socat
+                ;;
+            3)
+                echo -e "\n${YELLOW}[INFO]${NC} Consultando procesos activos..."
+                mostrar_procesos
+                ;;
+            4)
+                echo -e "\n${GREEN}[INFO]${NC} Saliendo del script..."
+                exit 0
+                ;;
+            *)
+                echo -e "\n${RED}[ERROR]${NC} Opción no válida. Intenta de nuevo."
+                ;;
+        esac
+        
+        echo -e "\n${YELLOW}Presiona Enter para continuar...${NC}"
+        read -r
+    done
+}
+
+# Ejecutar función principal
+main "$@"
