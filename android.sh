@@ -17,7 +17,8 @@ function escanear_bloques() {
 
   for bloque in "${BLOQUES[@]}"; do
     echo "  Escaneando rango $bloque ..."
-    mapfile -t ips < <(nmap -p $CAM_PORT --open --max-retries 1 --host-timeout 2s "$bloque" -oG - | awk '/554\/open/{print $2}')
+    # Mejorado: filtrar líneas vacías y espacios directamente en el pipeline
+    mapfile -t ips < <(nmap -p $CAM_PORT --open --max-retries 1 --host-timeout 2s "$bloque" -oG - | awk '/554\/open/{print $2}' | grep -v '^[[:space:]]*$' | tr -d '[:space:]')
     ips_encontradas+=("${ips[@]}")
   done
 
@@ -33,8 +34,15 @@ function redirigir_a_camaras() {
   echo "Cámaras encontradas: ${#camaras[@]}"
 
   for ip in "${camaras[@]}"; do
-    ip_trimmed="$(echo -n "$ip" | tr -d '[:space:]')"
-    if [[ -z "$ip_trimmed" ]]; then
+    # Validación más robusta de IP
+    if [[ -z "$ip" || "$ip" =~ ^[[:space:]]*$ ]]; then
+        echo "⚠️  IP vacía o con espacios detectada, saltando..."
+        continue
+    fi
+    
+    # Validación adicional: verificar que la IP tenga formato válido
+    if ! [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        echo "⚠️  IP inválida detectada: '$ip', saltando..."
         continue
     fi
 
