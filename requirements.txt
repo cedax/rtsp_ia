@@ -1,2 +1,1 @@
-opencv-python==4.8.1.78
-python-dotenv==1.0.0
+pip install opencv-python ultralytics numpy python-dotenv
