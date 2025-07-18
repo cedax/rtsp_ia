@@ -1,49 +1,62 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
 CAM_PORT=554
-
-PUERTOS_LOCALES=(8451 8453 8455 8457 8459 8461)
-
-RANGO_IPS="192.169.0.0-100"
-
+PUERTOS_LOCALES=(8451 8453 8455 8457 8459)
 PID_FILE="/data/data/com.termux/files/usr/tmp/socat_pids.txt"
 
-function escanear_camaras() {
-  echo "🔍 Escaneando IPs activas con puerto $CAM_PORT abierto en $RANGO_IPS..."
-  nmap -p $CAM_PORT --open $RANGO_IPS -oG - | awk '/554\/open/{print $2}'
+BLOQUES=(
+  "192.168.0.0-63"
+  "192.168.0.64-127"
+  "192.168.0.128-191"
+  "192.168.0.192-254"
+)
+
+function escanear_bloques() {
+  local ip
+  local ips_encontradas=()
+
+  echo "🔍 Escaneando bloques con nmap..."
+
+  for bloque in "${BLOQUES[@]}"; do
+    echo "  Escaneando rango $bloque ..."
+    mapfile -t ips < <(nmap -p $CAM_PORT --open --max-retries 1 --host-timeout 2s "$bloque" -oG - | awk '/554\/open/{print $2}')
+    ips_encontradas+=("${ips[@]}")
+  done
+
+  printf "%s\n" "${ips_encontradas[@]}"
 }
 
 function redirigir_a_camaras() {
   local index=0
-  local ip
   > "$PID_FILE"
 
-  for ip in $(escanear_camaras); do
-    if [[ $index -ge ${#PUERTOS_LOCALES[@]} ]]; then
-      echo "⚠️  Se encontraron más de ${#PUERTOS_LOCALES[@]} cámaras. Solo se redireccionan las primeras ${#PUERTOS_LOCALES[@]}."
+  mapfile -t camaras < <(escanear_bloques | sort -u)
+
+  echo "Cámaras encontradas: ${#camaras[@]}"
+
+  for ip in "${camaras[@]}"; do
+    if (( index >= ${#PUERTOS_LOCALES[@]} )); then
+      echo "⚠️  Se detectaron más de ${#PUERTOS_LOCALES[@]} cámaras. Solo se redirigen las primeras 5."
       break
     fi
 
     local puerto_local=${PUERTOS_LOCALES[$index]}
     echo "🔁 Redirigiendo puerto local $puerto_local → $ip:$CAM_PORT"
 
-    # Lanza socat en segundo plano
     nohup socat TCP-LISTEN:$puerto_local,fork TCP:$ip:$CAM_PORT >/dev/null 2>&1 &
-    local pid=$!
-    echo "$pid" >> "$PID_FILE"
-
-    echo "✅ Cámara $ip redirigida en puerto local $puerto_local (PID $pid)"
+    echo $! >> "$PID_FILE"
+    echo "✅ Redirección activa para $ip en puerto local $puerto_local (PID $!)"
     ((index++))
   done
 
-  if [[ $index -eq 0 ]]; then
-    echo "❌ No se encontraron cámaras en el rango $RANGO_IPS con el puerto $CAM_PORT abierto."
+  if (( index == 0 )); then
+    echo "❌ No se encontraron cámaras con el puerto $CAM_PORT abierto."
   fi
 }
 
 function matar_redirecciones() {
   if [[ ! -f "$PID_FILE" ]]; then
-    echo "ℹ️  No hay archivo de PIDs guardado. Nada que matar."
+    echo "ℹ️  No hay procesos socat guardados para matar."
     return
   fi
 
